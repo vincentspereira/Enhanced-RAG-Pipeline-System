@@ -1,0 +1,109 @@
+{
+  "test_summary": {
+    "total_tests": 6,
+    "passed": 5,
+    "failed": 1,
+    "success_rate": 83.33333333333334,
+    "total_duration": 26.32758378982544
+  },
+  "test_results": {
+    "advanced_memory_optimizer": {
+      "status": "PASSED",
+      "duration": 7.4466493129730225,
+      "details": {
+        "memory_stats": {
+          "memory": {
+            "system_total_gb": 59.855525970458984,
+            "system_used_gb": 26.94326400756836,
+            "system_available_gb": 32.912261962890625,
+            "system_usage_percent": 45.0,
+            "process_rss_mb": 425.4609375,
+            "process_vms_mb": 1227.515625,
+            "process_percent": 0.6941534470558387,
+            "swap_total_gb": 21.0,
+            "swap_used_gb": 0.08166885375976562,
+            "swap_percent": 0.4
+          },
+          "cache": {
+            "hit_count": 0,
+            "miss_count": 0,
+            "hit_rate": 0,
+            "cache_size": 0,
+            "estimated_memory_mb": 0.0
+          },
+          "task_queue_size": 0,
+          "active_tasks": 8,
+          "gpu": {
+            "allocated_mb": 0.0,
+            "reserved_mb": 0.0,
+            "max_allocated_mb": 0.0
+          }
+        }
+      }
+    },
+    "advanced_query_optimizer": {
+      "status": "PASSED",
+      "duration": 14.529709815979004,
+      "details": {
+        "original_query": "What is machine learning?",
+        "optimized_query": "What is machine learning?",
+        "intent": "factual",
+        "confidence": 0.84
+      }
+    },
+    "auto_scaler": {
+      "status": "PASSED",
+      "duration": 1.075840950012207,
+      "details": {
+        "scaling_stats": {
+          "enabled": true,
+          "total_scaling_actions": 0,
+          "successful_scaling_actions": 0,
+          "success_rate": 0.0,
+          "metrics_history_size": 0,
+          "scaling_history_size": 0,
+          "current_resources": {
+            "cpu_workers": 0,
+            "batch_size": 0,
+            "memory_cache": 0,
+            "gpu_memory": 0,
+            "connection_pool": 0,
+            "embedding_model": 0
+          },
+          "latest_metrics": null,
+          "prediction_enabled": true,
+          "gpu_monitoring_available": true
+        },
+        "enabled": true
+      }
+    },
+    "error_recovery_system": {
+      "status": "PASSED",
+      "duration": 0.008684158325195312,
+      "details": {
+        "recovery_result": {
+          "status": "success",
+          "data": "test"
+        }
+      }
+    },
+    "realtime_dashboard": {
+      "status": "PASSED",
+      "duration": 3.117940902709961,
+      "details": {
+        "metrics_collected": true,
+        "dashboard_created": true
+      }
+    },
+    "integration_manager": {
+      "status": "FAILED",
+      "duration": 0.14751052856445312,
+      "details": {
+        "error": "name 'contextmanager' is not defined",
+        "note": "Integration Manager may have import issues"
+      }
+    }
+  },
+  "timestamp": "2025-05-26T02:29:21.905299",
+  "test_type": "comprehensive_isolated_integration"
+}

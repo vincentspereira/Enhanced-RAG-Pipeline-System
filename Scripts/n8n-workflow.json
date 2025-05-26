@@ -1,0 +1,163 @@
+{
+  "name": "RAG Document Processing Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "C:/Users/Vincent_Pereira/Qdrant/Documents",
+        "options": {
+          "recursive": true
+        }
+      },
+      "name": "Watch Documents",
+      "type": "n8n-nodes-base.watchFolder",
+      "position": [100, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:8000/process",
+        "jsonParameters": true,
+        "options": {
+          "bodyParametersUi": {
+            "parameter": [
+              {
+                "name": "directory_path",
+                "value": "={{ $json.path }}"
+              },
+              {
+                "name": "batch_size",
+                "value": "32"
+              }
+            ]
+          }
+        }
+      },
+      "name": "Trigger Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [300, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equals",
+              "value2": "success"
+            }
+          ]
+        }
+      },
+      "name": "Check Success",
+      "type": "n8n-nodes-base.if",
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "path": "C:/Users/Vincent_Pereira/Qdrant/Archived Documents",
+        "options": {
+          "recursive": true
+        }
+      },
+      "name": "Move to Archive",
+      "type": "n8n-nodes-base.moveFile",
+      "position": [700, 200]
+    },
+    {
+      "parameters": {
+        "channel": "monitoring",
+        "text": "=Document processing completed for {{ $json.path }}",
+        "attachments": [
+          {
+            "title": "Processing Results",
+            "text": "={{ $json.details }}"
+          }
+        ]
+      },
+      "name": "Success Notification",
+      "type": "n8n-nodes-base.slack",
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "channel": "alerts",
+        "text": "=Error processing document: {{ $json.path }}",
+        "attachments": [
+          {
+            "title": "Error Details",
+            "text": "={{ $json.error }}"
+          }
+        ]
+      },
+      "name": "Error Notification",
+      "type": "n8n-nodes-base.slack",
+      "position": [700, 400]
+    }
+  ],
+  "connections": {
+    "Watch Documents": {
+      "main": [
+        [
+          {
+            "node": "Trigger Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Processing": {
+      "main": [
+        [
+          {
+            "node": "Check Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Success": {
+      "true": [
+        [
+          {
+            "node": "Move to Archive",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ],
+      "false": [
+        [
+          {
+            "node": "Error Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Move to Archive": {
+      "main": [
+        [
+          {
+            "node": "Success Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "UTC"
+  },
+  "staticData": {},
+  "pinData": {},
+  "versionId": 1,
+  "meta": {
+    "instanceId": "local"
+  }
+}

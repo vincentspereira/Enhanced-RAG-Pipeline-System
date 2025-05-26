@@ -1,0 +1,82 @@
+model:
+  embedding_model: "Snowflake-Labs/arctic-embed2"
+  llm_model: "meta-llama/Llama-2-7b-hf"
+  device: "cuda"
+  batch_size: 32
+  max_length: 512
+  versioning:
+    enabled: true
+    storage_dir: "data/model_versions"
+  benchmarking:
+    enabled: true
+    output_dir: "data/benchmarks"
+    default_sample_size: 100
+
+# Vector store configuration with multiple providers
+vector_store:
+  provider: "qdrant"  # Default provider
+  qdrant:
+    host: "localhost"
+    port: 6333
+    collection_name: "documents"
+    vector_size: 768
+  weaviate:
+    host: "localhost"
+    port: 8080
+    class_name: "Document"
+    api_key: ""
+  pinecone:
+    api_key: ""
+    environment: "us-west1-gcp"
+    index_name: "documents"
+    dimension: 768
+  milvus:
+    host: "localhost"
+    port: 19530
+    collection_name: "documents"
+    vector_dim: 768
+
+# LLM service configuration with multiple providers
+llm:
+  default_provider: "huggingface"
+  providers:
+    huggingface:
+      models: ["meta-llama/Llama-2-7b-hf", "google/flan-t5-base"]
+    openai:
+      api_key: ""
+      models: ["gpt-4o", "gpt-3.5-turbo"]
+    anthropic:
+      api_key: ""
+      models: ["claude-3-opus-20240229"]
+
+# Knowledge graph configuration
+knowledge_graph:
+  enabled: true
+  name: "document_knowledge_graph"
+  storage_dir: "data/knowledge_graphs"
+  model: "en_core_web_lg"
+
+processing:
+  chunk_size: 512
+  chunk_overlap: 50
+  batch_size: 32
+  max_workers: 4
+
+cache_dir: "cache"
+enable_active_learning: true
+enable_categorization: true
+enable_workflows: true
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/rag_pipeline.log"
+
+# API configuration
+api:
+  host: "0.0.0.0"
+  port: 8000
+  workers: 4
+  timeout: 60
+  cors_origins: ["*"]

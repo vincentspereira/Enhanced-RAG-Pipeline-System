@@ -1,0 +1,14 @@
+torch
+numpy
+pandas
+tqdm
+psutil
+pytz
+requests
+PyPDF2
+python-docx
+openpyxl
+beautifulsoup4
+pyyaml
+tiktoken
+python-pptx

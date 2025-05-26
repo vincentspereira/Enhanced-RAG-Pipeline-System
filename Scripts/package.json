@@ -1,0 +1,38 @@
+{
+  "name": "copilot-rag-extension",
+  "displayName": "Copilot RAG Extension",
+  "description": "Integrates local RAG with GitHub Copilot",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:copilot-rag.query"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "copilot-rag.query",
+        "title": "Query Local RAG"
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "node ./test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.70.0",
+    "eslint": "^8.14.0",
+    "glob": "^8.0.1",
+    "vscode-test": "^1.6.1"
+  },
+  "dependencies": {
+    "axios": "^0.27.2"
+  }
+}

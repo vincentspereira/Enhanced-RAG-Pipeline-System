@@ -1,0 +1,29 @@
+model:
+  embedding_model: "Snowflake-Labs/arctic-embed2"
+  llm_model: "meta-llama/Llama-2-7b-hf"
+  device: "cuda"
+  batch_size: 4
+  max_length: 512
+
+vector_store:
+  store_type: "qdrant"
+  host: "localhost"
+  port: 6334  # Use different port for testing
+  collection_name: "test_documents"
+  vector_size: 768
+
+processing:
+  chunk_size: 512
+  chunk_overlap: 50
+  batch_size: 4
+  max_workers: 2
+
+cache_dir: "tests/cache"
+enable_active_learning: true
+enable_categorization: true
+enable_workflows: true
+
+logging:
+  level: "DEBUG"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "tests/logs/test_pipeline.log"

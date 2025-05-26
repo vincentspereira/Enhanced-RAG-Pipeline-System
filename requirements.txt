@@ -1,0 +1,89 @@
+# Core dependencies
+torch==2.1.0+cu118
+transformers==4.52.2
+sentence-transformers==4.1.0
+qdrant-client==1.14.2
+fastapi==0.115.12
+uvicorn==0.34.2
+openai==1.12.0
+python-dotenv==1.0.0
+aiohttp==3.11.18
+sse-starlette==1.8.2
+spacy==3.7.2
+networkx==3.2.1
+en-core-web-sm==3.7.1
+snowflake-connector-python==3.5.0
+
+# Vector store dependencies
+weaviate-client==3.25.2
+pinecone-client==2.2.2
+pymilvus==2.3.2
+
+# LLM integration
+anthropic==0.8.1
+llama-cpp-python==0.2.19
+
+# Knowledge Graph
+matplotlib==3.8.2
+spacy-transformers==1.2.5
+en-core-web-lg==3.7.1
+plotly==5.16.0
+pyvis==0.3.2
+pandas==2.2.3
+
+# Cloud storage providers
+boto3==1.33.13
+azure-storage-blob==12.19.0
+google-cloud-storage==2.14.0
+
+# Document processing
+PyPDF2==3.0.1
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+pandas==2.2.3
+beautifulsoup4==4.13.4
+python-magic-bin==0.4.14
+PyRTF3==0.47.5
+markdown2==2.5.3
+pyyaml==6.0.2
+xmltodict==0.14.2
+pyarrow==20.0.0
+sqlparse==0.5.3
+
+# Enhanced text processing
+pytesseract==0.3.13
+pdf2image==1.16.3
+ftfy==7.0.0
+langdetect==2.0.0
+nltk==3.8.1
+scikit-learn==1.3.0
+Pillow==10.0.0
+python-magic==0.4.27
+
+# Utilities
+tqdm==4.67.1
+numpy==1.24.3
+scipy==1.15.3
+httpx==0.28.1
+aiohttp==3.11.18
+watchdog==6.0.0
+
+# Development
+pytest==8.0.0
+black==24.1.1
+isort==5.13.2
+flake8==7.0.0
+mypy==1.8.0
+
+# Testing dependencies
+pytest==8.1.1
+pytest-asyncio==0.21.0
+pytest-cov==4.1.0
+pytest-mock==3.12.0
+pytest-timeout==2.1.0
+coverage==7.4.0
+faker==22.4.0
+requests-mock==1.11.0
+aioresponses==0.7.6
+freezegun==1.2.2

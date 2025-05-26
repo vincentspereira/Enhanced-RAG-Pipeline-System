@@ -1,0 +1,85 @@
+name: rag-pipeline
+
+# Deployment configurations for different environments
+environments:
+  development:
+    api:
+      host: "0.0.0.0"
+      port: 8000
+      workers: 2
+      debug: true
+    vector_store:
+      host: "localhost"
+      port: 6333
+    resources:
+      cpu_limit: "2"
+      memory_limit: "8Gi"
+      gpu_limit: "1"
+
+  staging:
+    api:
+      host: "0.0.0.0"
+      port: 8000
+      workers: 4
+      debug: false
+    vector_store:
+      host: "qdrant-service"
+      port: 6333
+    resources:
+      cpu_limit: "4"
+      memory_limit: "16Gi"
+      gpu_limit: "1"
+
+  production:
+    api:
+      host: "0.0.0.0"
+      port: 8000
+      workers: 8
+      debug: false
+    vector_store:
+      host: "qdrant-service"
+      port: 6333
+    resources:
+      cpu_limit: "8"
+      memory_limit: "32Gi"
+      gpu_limit: "2"
+
+# Monitoring configuration
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+  grafana:
+    enabled: true
+    port: 3000
+  logging:
+    level: "INFO"
+    retention_days: 30
+
+# Security configuration
+security:
+  ssl:
+    enabled: true
+    cert_path: "/etc/ssl/certs/rag-pipeline.crt"
+    key_path: "/etc/ssl/private/rag-pipeline.key"
+  authentication:
+    enabled: true
+    jwt_secret_key: "${JWT_SECRET_KEY}"
+    token_expiry: 3600
+
+# Scaling configuration
+scaling:
+  min_replicas: 2
+  max_replicas: 10
+  target_cpu_utilization: 70
+  target_memory_utilization: 80
+
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 0 * * *"  # Daily at midnight
+  retention_days: 7
+  storage:
+    type: "s3"
+    bucket: "rag-pipeline-backups"
+    region: "us-east-1"

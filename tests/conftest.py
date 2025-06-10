@@ -7,9 +7,10 @@ import qdrant_client
 from sqlalchemy.orm import Session
 import asyncio
 import shutil
+# Removed asynccontextmanager as db_session will be sync
 
 # Test configuration
-@pytest.fixture
+@pytest.fixture(scope="session") # Changed to session scope
 def test_config():
     return {
         "database_url": os.getenv("TEST_DATABASE_URL", "sqlite:///test.db"),
@@ -20,25 +21,41 @@ def test_config():
     }
 
 # Database fixtures
-@pytest.fixture
-async def db_engine(test_config):
+from Scripts.security.rbac import RBACManager # Import RBACManager
+
+@pytest.fixture(scope="session") # Scope to session to run once
+def db_engine(test_config): # Making it synchronous
     engine = sa.create_engine(test_config["database_url"])
+
+    # Create tables and initialize default roles once per test session
+    rbac_manager = RBACManager(engine=engine)
+    rbac_manager.create_tables_if_needed()
+    # APIKeyManager tables are also created if they share the same Base.metadata
+    # from Scripts.security.api_keys import APIKeyManager
+    # apikey_manager = APIKeyManager(rbac_manager)
+    # apikey_manager.create_tables_if_needed() # If APIKeyManager had its own Base/tables
+
+    rbac_manager.initialize_default_roles_if_needed() # This handles its own session and commit
+
     yield engine
     engine.dispose()
 
-@pytest.fixture
-async def db_session(db_engine):
+@pytest.fixture # Making it synchronous, function scope for transactions
+def db_session(db_engine): # Making it synchronous, depends on session-scoped db_engine
+    # Standard SQLAlchemy session setup is synchronous
     connection = db_engine.connect()
     transaction = connection.begin()
     session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
+    try:
+        yield session
+    finally:
+        session.close()
+        transaction.rollback()
+        connection.close()
 
 # Qdrant fixtures
-@pytest.fixture
-async def qdrant_client(test_config):
+@pytest.fixture # Assuming qdrant_client can also be sync for unit tests if not interacting with loop
+def qdrant_client(test_config): # Making it synchronous
     client = qdrant_client.QdrantClient(url=test_config["qdrant_url"])
     yield client
     # Cleanup collections after tests

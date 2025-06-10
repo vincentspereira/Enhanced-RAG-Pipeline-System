@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import httpx
 import asyncio
 import time
+import uuid
 
 from Scripts.api_hub.oauth2 import OAuth2Manager, OAuth2Provider, GoogleOAuth2Provider, GithubOAuth2Provider
 from Scripts.api_hub.rate_limiter import RateLimiter, RateLimit
@@ -241,17 +242,21 @@ oauth2_manager = OAuth2Manager()
 # Load configuration from environment or config file
 GITHUB_CLIENT_ID = os.environ.get("GITHUB_CLIENT_ID", "your-github-client-id")
 GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_CLIENT_SECRET", "your-github-client-secret")
+GITHUB_REDIRECT_URI = os.environ.get("GITHUB_REDIRECT_URI", "http://localhost:8000/callback/github")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "your-google-client-id")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "your-google-client-secret")
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "http://localhost:8000/callback/google")
 
 # Register OAuth2 providers
 github_provider = GithubOAuth2Provider(
     client_id=GITHUB_CLIENT_ID,
-    client_secret=GITHUB_CLIENT_SECRET
+    client_secret=GITHUB_CLIENT_SECRET,
+    redirect_uri=GITHUB_REDIRECT_URI
 )
 google_provider = GoogleOAuth2Provider(
     client_id=GOOGLE_CLIENT_ID,
-    client_secret=GOOGLE_CLIENT_SECRET
+    client_secret=GOOGLE_CLIENT_SECRET,
+    redirect_uri=GOOGLE_REDIRECT_URI
 )
 
 oauth2_manager.register_provider(github_provider)
@@ -356,6 +361,23 @@ async def list_services():
     return {
         "services": api_services,
         "count": len(api_services)
+    }
+
+
+@router.get("/rate-limits", summary="List available rate limits")
+async def list_rate_limits(rate_limiter_dep: RateLimiter = Depends(get_rate_limiter)):
+    """List all configured rate limits."""
+    limits = rate_limiter_dep.list_limits()
+    return {
+        "rate_limits": [
+            {
+                "name": limit.name,
+                "limit": limit.limit,
+                "window": limit.window,
+                "description": limit.description
+            }
+            for limit in limits
+        ]
     }
 
 

@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from pathlib import Path
 import uvicorn
 import logging
-from rag_pipeline import RAGPipeline
+from .rag_pipeline import RAGPipeline
 import json
 import httpx
 from datetime import datetime
@@ -139,7 +139,7 @@ async def copilot_query(
             "metadata": {
                 "query_time": datetime.utcnow().isoformat(),
                 "context_used": bool(results),
-                **query.context if query.context else {}
+                **(query.context or {})
             }
         }
         

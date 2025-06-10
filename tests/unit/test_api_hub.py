@@ -286,7 +286,7 @@ def test_get_rate_limits(mock_rate_limiter):
     """Test getting rate limit status"""
     response = client.get("/api-hub/rate-limits")
     assert response.status_code == 200
-    assert "limits" in response.json()
+    assert "rate_limits" in response.json()
 
 # Test webhook management
 def test_webhook_management(mock_webhooks, mock_save_webhooks):

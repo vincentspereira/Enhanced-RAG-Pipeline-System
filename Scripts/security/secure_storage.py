@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import json
 
+from sqlalchemy.orm import Session # Added import for Session
 from .encryption import DataEncryption
 from .audit_logger import AuditLogger, AuditEvent
 from .rbac import RBACManager
@@ -70,13 +71,14 @@ class SecureStorage:
                       content: Union[bytes, BinaryIO],
                       filename: str,
                       content_type: str,
-                      metadata: Optional[Dict[str, Any]] = None) -> str:
+                      metadata: Optional[Dict[str, Any]] = None,
+                      session: Optional[Session] = None) -> str: # Added session
         """
         Store a document securely with encryption and audit logging.
         Returns the document ID.
         """
         # Check permissions
-        if not self.rbac_manager.check_permission(user_id, 'documents', 'write'):
+        if not self.rbac_manager.check_permission(user_id, 'documents', 'write', session=session): # Pass session
             raise PermissionError("User does not have write permission")
 
         # Generate document ID
@@ -155,13 +157,14 @@ class SecureStorage:
 
     def retrieve_document(self, 
                          user_id: uuid.UUID, 
-                         doc_id: str) -> SecureDocument:
+                         doc_id: str,
+                         session: Optional[Session] = None) -> SecureDocument: # Added session
         """
         Retrieve a document's metadata and content.
         Returns a SecureDocument object.
         """
         # Check permissions
-        if not self.rbac_manager.check_permission(user_id, 'documents', 'read'):
+        if not self.rbac_manager.check_permission(user_id, 'documents', 'read', session=session): # Pass session
             raise PermissionError("User does not have read permission")
 
         try:
@@ -219,12 +222,13 @@ class SecureStorage:
                        user_id: uuid.UUID,
                        doc_id: str,
                        content: Optional[Union[bytes, BinaryIO]] = None,
-                       metadata: Optional[Dict[str, Any]] = None) -> None:
+                       metadata: Optional[Dict[str, Any]] = None,
+                       session: Optional[Session] = None) -> None: # Added session
         """
         Update a document's content and/or metadata.
         """
         # Check permissions
-        if not self.rbac_manager.check_permission(user_id, 'documents', 'write'):
+        if not self.rbac_manager.check_permission(user_id, 'documents', 'write', session=session): # Pass session
             raise PermissionError("User does not have write permission")
 
         try:
@@ -303,12 +307,12 @@ class SecureStorage:
             ))
             raise
 
-    def delete_document(self, user_id: uuid.UUID, doc_id: str) -> None:
+    def delete_document(self, user_id: uuid.UUID, doc_id: str, session: Optional[Session] = None) -> None: # Added session
         """
         Delete a document and its metadata.
         """
         # Check permissions
-        if not self.rbac_manager.check_permission(user_id, 'documents', 'delete'):
+        if not self.rbac_manager.check_permission(user_id, 'documents', 'delete', session=session): # Pass session
             raise PermissionError("User does not have delete permission")
 
         try:
@@ -348,12 +352,13 @@ class SecureStorage:
 
     def list_documents(self, 
                       user_id: uuid.UUID, 
-                      filters: Optional[Dict[str, Any]] = None) -> list[SecureDocument]:
+                      filters: Optional[Dict[str, Any]] = None,
+                      session: Optional[Session] = None) -> list[SecureDocument]: # Added session
         """
         List documents with optional filtering.
         """
         # Check permissions
-        if not self.rbac_manager.check_permission(user_id, 'documents', 'list'):
+        if not self.rbac_manager.check_permission(user_id, 'documents', 'list', session=session): # Pass session
             raise PermissionError("User does not have list permission")
 
         try:

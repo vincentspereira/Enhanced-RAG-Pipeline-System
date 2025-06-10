@@ -92,7 +92,7 @@ class TestVectorStoreRegistry:
         
         registry.register_store("store1", store1)
         registry.register_store("store2", store2)
-          stores = registry.list_stores()
+        stores = registry.list_stores()
         assert set(stores) == {"store1", "store2"}
 
 class TestWeaviateVectorStore:

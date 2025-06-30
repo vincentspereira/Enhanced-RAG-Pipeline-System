@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # API router
 router = APIRouter(prefix="/embedding-training", tags=["Embedding Training"])
 
+# Auth imports
+from ...auth.dependencies import get_auth_manager_dependency
+from ...auth.auth_manager import AuthManager, AuthUser, Permission
+
+
 # Pydantic models for API
 class DatasetCreateRequest(BaseModel):
     """Model for dataset creation request."""

@@ -11,7 +11,8 @@ from ...llm.prompt_system import (
     PromptTemplate, 
     PromptManagementSystem
 )
-from ...auth.dependencies import get_current_user
+from ...auth.dependencies import get_auth_manager_dependency
+from ...auth.auth_manager import AuthUser, Permission # Removed AuthManager as it's implicitly handled by dependency
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -79,7 +80,7 @@ def get_pms() -> PromptManagementSystem:
 
 # Template CRUD endpoints
 @router.get("/templates", response_model=List[TemplateResponse])
-async def list_templates(current_user = Depends(get_current_user)):
+async def list_templates(current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_READ))):
     """List all available prompt templates."""
     pms = get_pms()
     templates = []
@@ -100,7 +101,7 @@ async def list_templates(current_user = Depends(get_current_user)):
 @router.get("/templates/{name}", response_model=TemplateResponse)
 async def get_template(
     name: str = Path(..., description="Template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_READ))
 ):
     """Get a specific prompt template by name."""
     pms = get_pms()
@@ -120,7 +121,7 @@ async def get_template(
 @router.post("/templates", response_model=TemplateResponse)
 async def create_template(
     template_data: TemplateCreate,
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_WRITE))
 ):
     """Create a new prompt template."""
     pms = get_pms()
@@ -147,7 +148,7 @@ async def create_template(
 async def update_template(
     template_data: TemplateUpdate,
     name: str = Path(..., description="Template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_WRITE))
 ):
     """Update an existing prompt template."""
     pms = get_pms()
@@ -173,7 +174,7 @@ async def update_template(
 @router.delete("/templates/{name}", status_code=204)
 async def delete_template(
     name: str = Path(..., description="Template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_WRITE))
 ):
     """Delete a prompt template."""
     pms = get_pms()
@@ -190,7 +191,7 @@ async def delete_template(
 async def optimize_template(
     optimization_settings: OptimizationSettings,
     name: str = Path(..., description="Template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_WRITE)) # Or a more specific PROMPT_OPTIMIZE perm
 ):
     """Optimize a prompt template based on metrics."""
     pms = get_pms()
@@ -221,7 +222,7 @@ async def optimize_template(
 @router.get("/usage", response_model=UsageStatsResponse)
 async def get_usage_statistics(
     template_name: Optional[str] = Query(None, description="Filter by template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.ADMIN_READ))
 ):
     """Get usage statistics for prompt templates."""
     pms = get_pms()
@@ -236,7 +237,7 @@ async def get_usage_statistics(
 @router.get("/performance", response_model=PerformanceMetricsResponse)
 async def get_performance_metrics(
     template_name: Optional[str] = Query(None, description="Filter by template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.ADMIN_READ))
 ):
     """Get performance metrics for prompt templates."""
     pms = get_pms()
@@ -253,7 +254,7 @@ async def get_performance_metrics(
 async def track_template_performance(
     metrics: Dict[str, Any],
     name: str = Path(..., description="Template name"),
-    current_user = Depends(get_current_user)
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_WRITE))
 ):
     """Track performance metrics for a prompt template."""
     pms = get_pms()
@@ -296,7 +297,7 @@ class PromptVersionModel(BaseModel):
 @router.post("/test", summary="Test prompt template")
 async def test_template(
     request: PromptTestRequest,
-    current_user = Depends(get_current_user) # Added auth
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_READ))
 ):
     """Test a prompt template with provided variables."""
     pms = get_pms()
@@ -318,7 +319,7 @@ async def test_template(
 @router.get("/versions/{name}", response_model=List[PromptVersionModel], summary="List template versions")
 async def list_template_versions(
     name: str = Path(..., description="Template name"),
-    current_user = Depends(get_current_user) # Added auth
+    current_user: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_READ))
 ):
     """List all versions of a specific template."""
     pms = get_pms()
@@ -353,7 +354,7 @@ async def submit_template_feedback(
     version: str = Body(..., embed=True, description="Template version"),
     user_id: Optional[str] = Body(None, embed=True, description="User ID from request or auth"),
     feedback: Dict[str, Any] = Body(..., embed=True, description="Feedback data"),
-    current_user_auth: Any = Depends(get_current_user) # Renamed to avoid conflict
+    current_user_auth: AuthUser = Depends(get_auth_manager_dependency().require_permission(Permission.API_WRITE)) # Renamed, applied new auth
 ):
     """Submit feedback for a specific template version."""
     pms = get_pms()

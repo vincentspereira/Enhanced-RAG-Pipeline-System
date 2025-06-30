@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 # API router
 router = APIRouter(prefix="/api-hub", tags=["API Integration Hub"])
 
+# Auth imports
+from ...auth.dependencies import get_auth_manager_dependency
+from ...auth.auth_manager import AuthManager, AuthUser, Permission
+
+
 # Pydantic models for API
 class APIServiceModel(BaseModel):
     """Model for an external API service."""

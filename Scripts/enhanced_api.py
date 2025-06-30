@@ -295,7 +295,11 @@ class SystemStatusResponse(BaseModel):
 # --- Core RAG Endpoints ---
 # (search_rag_endpoint, process_documents_endpoint, etc. as previously defined)
 @app.post("/search_rag", response_model=MigratedSearchResponse, tags=["RAG Core"])
-async def search_rag_endpoint(payload: SearchQueryInput, fastapi_req: Request):
+async def search_rag_endpoint(
+    payload: SearchQueryInput,
+    fastapi_req: Request,
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.SEARCH_BASIC)
+):
     rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
     if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
     try:
@@ -304,7 +308,12 @@ async def search_rag_endpoint(payload: SearchQueryInput, fastapi_req: Request):
     except Exception as e: logger.error(f"Search RAG error: {str(e)}"); raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/process_docs", tags=["RAG Core"])
-async def process_documents_endpoint(payload: ProcessRequestInput, background_tasks: BackgroundTasks, fastapi_req: Request):
+async def process_documents_endpoint(
+    payload: ProcessRequestInput,
+    background_tasks: BackgroundTasks,
+    fastapi_req: Request,
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.DOCUMENT_WRITE)
+):
     rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
     if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
     path = Path(payload.directory_path)
@@ -313,7 +322,10 @@ async def process_documents_endpoint(payload: ProcessRequestInput, background_ta
     return {"message": f"Started processing documents from {path}"}
 
 @app.get("/system_status_rag", tags=["RAG Core"])
-async def get_system_status_rag_endpoint(fastapi_req: Request):
+async def get_system_status_rag_endpoint(
+    fastapi_req: Request,
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.API_READ)
+):
     rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
     if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
     try:
@@ -322,7 +334,11 @@ async def get_system_status_rag_endpoint(fastapi_req: Request):
     except Exception as e: logger.error(f"RAG System status error: {str(e)}"); raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate_response", tags=["RAG Core"])
-async def generate_response_endpoint(payload: GenerateRequestInput, fastapi_req: Request):
+async def generate_response_endpoint(
+    payload: GenerateRequestInput,
+    fastapi_req: Request,
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.API_EXECUTE)
+):
     rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
     if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
     try:
@@ -335,7 +351,13 @@ async def generate_response_endpoint(payload: GenerateRequestInput, fastapi_req:
 # --- Copilot Endpoints ---
 # (consolidated_chat_with_copilot, consolidated_stream_chat_with_copilot as previously defined)
 @app.post("/copilot/chat", response_model=CopilotResponse, tags=["Copilot"])
-async def consolidated_chat_with_copilot(copilot_req_body: CopilotRequest, agent: CopilotAgent = Depends(get_copilot_agent_dependency), copilot_token: Optional[str] = Depends(verify_copilot_token_dependency), fastapi_req: Request):
+async def consolidated_chat_with_copilot(
+    copilot_req_body: CopilotRequest,
+    fastapi_req: Request, # Moved fastapi_req up to be before Depends that use it or app.state
+    agent: CopilotAgent = Depends(get_copilot_agent_dependency),
+    copilot_token: Optional[str] = Depends(verify_copilot_token_dependency),
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.API_EXECUTE)
+):
     try:
         integration_manager = await get_integration_manager()
         optimization_result = await integration_manager.optimize_query(copilot_req_body.query, copilot_req_body.context)
@@ -351,7 +373,13 @@ async def consolidated_chat_with_copilot(copilot_req_body: CopilotRequest, agent
     except Exception as e: logger.error(f"Copilot chat error: {e}"); raise HTTPException(status_code=500, detail=f"Copilot chat failed: {str(e)}")
 
 @app.post("/copilot/chat/stream", tags=["Copilot"])
-async def consolidated_stream_chat_with_copilot(copilot_req_body: CopilotRequest, agent: CopilotAgent = Depends(get_copilot_agent_dependency), copilot_token: Optional[str] = Depends(verify_copilot_token_dependency), fastapi_req: Request):
+async def consolidated_stream_chat_with_copilot(
+    copilot_req_body: CopilotRequest,
+    fastapi_req: Request, # Moved fastapi_req up
+    agent: CopilotAgent = Depends(get_copilot_agent_dependency),
+    copilot_token: Optional[str] = Depends(verify_copilot_token_dependency),
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.API_EXECUTE)
+):
     try:
         integration_manager = await get_integration_manager()
         optimization_result = await integration_manager.optimize_query(copilot_req_body.query, copilot_req_body.context)
@@ -488,7 +516,12 @@ async def system_status_main():
 
 @app.post("/search_direct_qdrant", response_model=EnhancedSearchResponse, tags=["Search"])
 @with_recovery(component_name="api_search_direct", severity=ErrorSeverity.MEDIUM)
-async def search_direct_qdrant_endpoint(query: EnhancedQuery, provider=Depends(get_embedding_provider_dependency), fastapi_req: Request):
+async def search_direct_qdrant_endpoint(
+    query: EnhancedQuery,
+    fastapi_req: Request, # Moved fastapi_req up
+    provider=Depends(get_embedding_provider_dependency),
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.SEARCH_ADVANCED)
+):
     start_time = time.time()
     try:
         integration_manager = await get_integration_manager() # Assumes this is fine to call multiple times or is singleton from app.state

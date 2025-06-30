@@ -36,8 +36,16 @@ class WebhookConfig(BaseModel):
     secret: Optional[str]
     is_active: bool = True
 
+# Auth imports (if not already at the top of the file)
+# from ..auth.dependencies import get_auth_manager_dependency # Assuming this path is correct from enhanced_api context
+# from ..auth.auth_manager import AuthManager, AuthUser, Permission
+
 @router.post("/webhooks")
-async def register_webhook(config: WebhookConfig):
+async def register_webhook(
+    config: WebhookConfig,
+    auth_manager: AuthManager = Depends(get_auth_manager_dependency), # type: ignore
+    current_user: AuthUser = Depends(lambda auth_mgr: auth_mgr.require_permission(Permission.ADMIN_WRITE)) # type: ignore
+):
     """Register a new webhook endpoint"""
     webhook_id = str(len(webhooks) + 1)
     webhooks[webhook_id] = config

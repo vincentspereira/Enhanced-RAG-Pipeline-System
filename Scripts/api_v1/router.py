@@ -18,10 +18,14 @@ from api import (
 # Import routers
 from .prompt_router import router as prompt_router
 from .webhook import router as webhook_router
+from .embedding_training_router import router as embedding_training_router
+from .api_hub_router import router as api_hub_router
 
 # Include routers
 router.include_router(prompt_router)
 router.include_router(webhook_router)
+router.include_router(embedding_training_router)
+router.include_router(api_hub_router)
 
 # Webhook configurations storage
 webhooks: Dict[str, WebhookConfig] = {}

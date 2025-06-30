@@ -53,7 +53,7 @@ class CacheSettingsConfig: # Renamed to avoid conflict with PathsConfig.cache_di
 @dataclass
 class FeatureFlagsConfig:
     enable_active_learning: bool = True
-    enable_elasticsearch_fallback: bool = True # Added new flag
+    enable_elasticsearch_fallback: bool = True
     enable_categorization: bool = True
     enable_workflows: bool = True
     enable_knowledge_graph: bool = True # from Scripts/config.py

@@ -3,12 +3,13 @@ Enhanced RAG API with Integrated Optimization Components
 Includes memory optimization, query optimization, auto-scaling, error recovery, and real-time monitoring
 """
 
-from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, Request, HTTPException, Depends, BackgroundTasks, Header, status as fastapi_status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm # Added OAuth2PasswordRequestForm
+from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
-from typing import List, Optional, Dict, Any, Literal, Callable
+from typing import List, Optional, Dict, Any, Literal, Callable, Union
 import uvicorn
 import logging
 import os
@@ -18,6 +19,7 @@ from functools import lru_cache
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Import existing components
 from embeddings import create_embedding_provider, EmbeddingProvider
@@ -36,6 +38,30 @@ from enhancers.error_recovery import (
 )
 from monitoring.realtime_dashboard import RealTimeDashboard, MonitoringConfig
 
+# Import ConfigManager and specific config dataclasses
+from config.manager import (
+    ConfigManager,
+    SystemConfig as AppSystemConfig,
+    ModelConfig as AppModelConfig,
+    VectorStoreConfig as AppVectorStoreConfig,
+    ProcessingConfig as AppProcessingConfig,
+    APIConfig as AppAPIConfig,
+    PathsConfig as AppPathsConfig,
+    CacheSettingsConfig as AppCacheSettingsConfig,
+    FeatureFlagsConfig as AppFeatureFlagsConfig,
+    ElasticsearchConfig as AppElasticsearchConfig,
+    AuthConfigData # Imported AuthConfigData
+)
+
+# Import RAGPipeline and its dependencies
+from rag_pipeline import RAGPipeline
+from document_processor import DocumentProcessor as ActualDocumentProcessor
+from embedding_generator import EmbeddingGenerator as ActualEmbeddingGenerator
+
+# Import AuthManager and related items
+from auth.auth_manager import AuthManager, AuthConfig as AppAuthConfig, User as AuthUser, Permission
+
+
 # Load environment variables
 load_dotenv()
 
@@ -43,15 +69,25 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app with enhanced configuration
+# Create FastAPI app
 app = FastAPI(
     title="Enhanced RAG API with Optimization",
     version="2.0.0",
     description="Advanced RAG API with auto-scaling, error recovery, real-time monitoring, and intelligent optimizations"
 )
 
-# Initialize Qdrant client
-qdrant_client = QdrantClient("localhost", port=6333)
+# Initialize ConfigManager
+config_file_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+if not os.path.exists(config_file_path):
+    ConfigManager(config_path=config_file_path).save_config()
+config_manager = ConfigManager(config_path=config_file_path)
+app_config: AppSystemConfig = config_manager.config
+
+# Global Qdrant client for health checks
+qdrant_client = QdrantClient(
+    host=app_config.vector_store.host,
+    port=app_config.vector_store.port
+)
 
 # CORS middleware
 app.add_middleware(
@@ -62,7 +98,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Enhanced Rate Limiting with Dynamic Adjustment
+# Enhanced Rate Limiter (definition as before)
 class EnhancedRateLimiter:
     def __init__(self, calls: int, period: int):
         self.base_calls = calls
@@ -71,605 +107,447 @@ class EnhancedRateLimiter:
         self.current_period = period
         self.tokens = {}
         self.system_load_factor = 1.0
-    
     def adjust_limits_for_load(self, cpu_usage: float, memory_usage: float):
-        """Dynamically adjust rate limits based on system load"""
-        # Reduce limits if system is under high load
-        if cpu_usage > 0.8 or memory_usage > 0.9:
-            self.system_load_factor = 0.5
-        elif cpu_usage > 0.6 or memory_usage > 0.7:
-            self.system_load_factor = 0.7
-        else:
-            self.system_load_factor = 1.0
-        
+        if cpu_usage > 0.8 or memory_usage > 0.9: self.system_load_factor = 0.5
+        elif cpu_usage > 0.6 or memory_usage > 0.7: self.system_load_factor = 0.7
+        else: self.system_load_factor = 1.0
         self.current_calls = int(self.base_calls * self.system_load_factor)
-        logger.debug(f"Rate limit adjusted to {self.current_calls} calls per {self.current_period}s")
-    
     def is_allowed(self, key: str) -> bool:
         now = time.time()
         self.tokens = {k: v for k, v in self.tokens.items() if now - v["timestamp"] < self.current_period}
-        
         if key not in self.tokens:
             self.tokens[key] = {"count": 1, "timestamp": now}
             return True
-        
         if self.tokens[key]["count"] < self.current_calls:
             self.tokens[key]["count"] += 1
             return True
-        
         return False
-    
     def get_stats(self) -> Dict[str, Any]:
-        """Get rate limiter statistics"""
-        return {
-            "base_calls_per_period": self.base_calls,
-            "current_calls_per_period": self.current_calls,
-            "period_seconds": self.current_period,
-            "system_load_factor": self.system_load_factor,
-            "active_clients": len(self.tokens)
-        }
+        return {"base_calls_per_period": self.base_calls, "current_calls_per_period": self.current_calls,
+                "period_seconds": self.current_period, "system_load_factor": self.system_load_factor,
+                "active_clients": len(self.tokens)}
+rate_limiter = EnhancedRateLimiter(calls=app_config.api.max_concurrent_requests * 60, period=60)
 
-rate_limiter = EnhancedRateLimiter(calls=100, period=60)
-
-# Enhanced middleware with error recovery and monitoring
 @app.middleware("http")
 async def enhanced_middleware(request: Request, call_next: Callable):
     start_time = time.time()
     client_ip = request.client.host
-    
     try:
-        # Get integration manager for monitoring
-        try:
-            integration_manager = await get_integration_manager()
-            
-            # Get current system metrics for rate limiting adjustment
+        if hasattr(app.state, 'integration_manager_instance') and app.state.integration_manager_instance:
+            integration_manager = app.state.integration_manager_instance
             stats = integration_manager.get_integration_stats()
             if stats.get("latest_health"):
                 health = stats["latest_health"]
-                rate_limiter.adjust_limits_for_load(
-                    health.get("cpu_usage", 0.0),
-                    health.get("memory_usage", 0.0)
-                )
-        except Exception as e:
-            logger.debug(f"Could not get integration manager: {e}")
-        
-        # Check rate limits
+                rate_limiter.adjust_limits_for_load(health.get("cpu_usage",0.0), health.get("memory_usage",0.0))
         if not rate_limiter.is_allowed(client_ip):
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "error": "Too many requests",
-                    "message": "Rate limit exceeded. Please try again later.",
-                    "retry_after": 60
-                }
-            )
-        
-        # Process request
+            return JSONResponse(status_code=429, content={"error": "Too many requests"})
         response = await call_next(request)
-        
-        # Add performance headers
         process_time = time.time() - start_time
         response.headers["X-Process-Time"] = str(process_time)
-        response.headers["X-API-Version"] = "2.0.0"
-        
+        response.headers["X-API-Version"] = app.version
         return response
-        
     except Exception as e:
         logger.error(f"Error in middleware: {e}")
-        process_time = time.time() - start_time
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Internal server error",
-                "message": "An error occurred processing your request",
-                "process_time": process_time
-            }
-        )
+        return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
-# Mount v1 router
+# Mount v1 router (which now includes all sub-routers)
 app.include_router(v1_router, prefix="/api/v1")
 
-# Import ConfigManager
-from config.manager import ConfigManager, SystemConfig as AppSystemConfig # Renamed to avoid conflict
 
-# Load environment variables
-load_dotenv()
+# --- Startup/Shutdown Events ---
+@app.on_event("startup")
+async def startup_event_main():
+    app.state.start_time = time.time()
+    logger.info(f"Starting {app.title} v{app.version}...")
+    app.state.app_config = app_config
+    app.state.config_manager = config_manager
 
-# Initialize ConfigManager
-# Assuming config.yaml is in the root or a predefined location accessible here
-# For instance, if enhanced_api.py is in Scripts/, and config.yaml is at root:
-config_file_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
-config_manager = ConfigManager(config_path=config_file_path)
-app_config: AppSystemConfig = config_manager.config
+    # Initialize AuthManager
+    auth_config_data_from_app = app_config.auth # This is AuthConfigData from config.manager
+    secret_key_from_env = os.getenv("API_SECRET_KEY", auth_config_data_from_app.secret_key)
 
+    # Map AuthConfigData to AppAuthConfig (from auth_manager)
+    auth_manager_config = AppAuthConfig(
+        secret_key=secret_key_from_env,
+        token_expire_minutes=auth_config_data_from_app.token_expire_minutes,
+        refresh_token_expire_days=auth_config_data_from_app.refresh_token_expire_days,
+        password_min_length=auth_config_data_from_app.password_min_length,
+        max_failed_attempts=auth_config_data_from_app.max_failed_attempts,
+        lockout_duration_minutes=auth_config_data_from_app.lockout_duration_minutes,
+        api_key_prefix=auth_config_data_from_app.api_key_prefix,
+        redis_url=auth_config_data_from_app.redis_url
+    )
+    auth_manager_instance = AuthManager(config=auth_manager_config)
+    app.state.auth_manager = auth_manager_instance
+    logger.info("AuthManager initialized.")
 
-# Initialize Qdrant client using ConfigManager
-qdrant_client = QdrantClient(
-    host=app_config.vector_store.host,
-    port=app_config.vector_store.port
-)
+    doc_processor = ActualDocumentProcessor(config=app_config.processing)
+    emb_generator = ActualEmbeddingGenerator(
+        model_name=app_config.model.embedding_model,
+        device=app_config.model.device
+    )
+    rag_pipeline_instance = RAGPipeline(
+        app_config=app_config,
+        doc_processor=doc_processor,
+        embedding_generator=emb_generator
+    )
+    await rag_pipeline_instance.async_initialize_components()
+    app.state.rag_pipeline = rag_pipeline_instance
+    logger.info("RAGPipeline initialized.")
 
+    # Initialize other enhancement systems
+    if app_config.feature_flags.enable_error_recovery or \
+       app_config.feature_flags.enable_auto_scaling or \
+       app_config.feature_flags.enable_monitoring: # Placeholder for actual monitoring flag
+        try:
+            app.state.integration_manager_instance = await initialize_integration()
+            if app.state.integration_manager_instance: logger.info("Integration system initialized.")
+            else: logger.warning("Integration system initialization failed or returned None.")
+        except Exception as e:
+            logger.error(f"Failed to initialize integration system: {e}")
+            app.state.integration_manager_instance = None
+    else:
+        app.state.integration_manager_instance = None
+        logger.info("Enhancement systems disabled by feature flags.")
+    logger.info(f"{app.title} startup complete.")
 
-# Enhanced dependency providers
+@app.on_event("shutdown")
+async def shutdown_event_main():
+    logger.info(f"Shutting down {app.title}...")
+    if hasattr(app.state, 'rag_pipeline') and app.state.rag_pipeline and app.state.rag_pipeline.es_fallback:
+        await app.state.rag_pipeline.es_fallback.close()
+        logger.info("Closed RAGPipeline Elasticsearch connection.")
+
+    if hasattr(app.state, 'integration_manager_instance') and app.state.integration_manager_instance:
+        try:
+            # Assuming get_integration_manager() retrieves the instance from app.state or re-initializes if needed
+            integration_manager = await get_integration_manager()
+            if integration_manager: await integration_manager.shutdown()
+
+            if app_config.feature_flags.enable_auto_scaling:
+                auto_scaler = await get_auto_scaler()
+                if auto_scaler: await auto_scaler.shutdown()
+            if app_config.feature_flags.enable_error_recovery:
+                recovery_system = get_error_recovery_system()
+                if recovery_system: await recovery_system.shutdown()
+            logger.info("Enhancement systems shutdown complete.")
+        except Exception as e:
+            logger.error(f"Shutdown error during enhancer cleanup: {e}")
+    logger.info(f"{app.title} shutdown complete.")
+
+# --- Dependency Providers ---
+# (get_embedding_provider_dependency, get_copilot_agent_dependency, verify_copilot_token_dependency as previously defined)
 @lru_cache()
-def get_embedding_provider():
-    """Get embedding provider with error recovery"""
+def get_embedding_provider_dependency():
     try:
-        # TODO: Ensure create_embedding_provider can take individual model config args
-        # For now, assuming it can use environment variables or direct args if needed
-        # Best would be to pass app_config.model.embedding_model_config if compatible
         return create_embedding_provider(
-            provider=app_config.model.llm_service, # Assuming embedding_provider is similar to llm_service type
-            model_name=app_config.model.embedding_model,
-            cache_dir=app_config.paths.cache_dir, # Using general cache_dir from PathsConfig
-            batch_size=app_config.model.batch_size, # model.batch_size might be general batch_size
-            # api_key and organization would ideally come from a more secure config or env
-            # For OpenAI, these would be os.getenv("OPENAI_API_KEY") etc.
-            # This part needs alignment with how create_embedding_provider consumes config.
+            provider=app_config.model.llm_service, model_name=app_config.model.embedding_model,
+            cache_dir=str(app_config.paths.cache_dir), batch_size=app_config.model.batch_size,
         )
     except Exception as e:
         logger.error(f"Failed to create embedding provider: {e}")
-        # Fallback to a basic provider
         return create_embedding_provider(provider="huggingface", model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-async def get_copilot_agent():
-    """Get Copilot agent with error recovery"""
-    # Assuming GITHUB_COPILOT_API_KEY and GITHUB_COPILOT_ENDPOINT are set in environment
-    # or could be part of a new 'integrations_config' section in SystemConfig
+async def get_copilot_agent_dependency():
     copilot_api_key = os.getenv("GITHUB_COPILOT_API_KEY")
     copilot_endpoint = os.getenv("GITHUB_COPILOT_ENDPOINT", "https://api.githubcopilot.com/chat/completions")
-
     if not copilot_api_key:
         raise HTTPException(status_code=500, detail="GitHub Copilot API key not configured")
-    
-    agent = CopilotAgent(
-        api_key=copilot_api_key,
-        endpoint=copilot_endpoint
-    )
-    async with agent as session:
-        yield session
+    agent = CopilotAgent(api_key=copilot_api_key, endpoint=copilot_endpoint)
+    async with agent as session: yield session
 
-# Enhanced request/response models
+async def verify_copilot_token_dependency(x_copilot_token: Optional[str] = Header(None, alias="X-Copilot-Token")):
+    if x_copilot_token and not x_copilot_token.startswith("gca_"):
+        raise HTTPException(status_code=401, detail="Invalid Copilot Agent token format.")
+    return x_copilot_token
+
+# Dependency to get AuthManager instance
+def get_auth_manager(request: Request) -> AuthManager:
+    return request.app.state.auth_manager
+
+# --- Pydantic Models (SearchQueryInput, ProcessRequestInput, etc. as previously defined) ---
+class SearchQueryInput(BaseModel):
+    query: str; limit: Optional[int] = 5; filters: Optional[Dict[str, Any]] = None; categories: Optional[Union[List[str], str]] = None
+class ProcessRequestInput(BaseModel):
+    directory_path: str; batch_size: Optional[int] = 32
+class GenerateRequestInput(BaseModel):
+    question: str; template_name: Optional[str] = "qa_prompt"; limit: Optional[int] = 5
+class SearchResultItem(BaseModel):
+    text: str; metadata: Dict[str, Any]; score: float
+class MigratedSearchResponse(BaseModel):
+    results: List[SearchResultItem]
+class ConfigUpdateRequestModel(BaseModel):
+    model: Optional[AppModelConfig] = None; vector_store: Optional[AppVectorStoreConfig] = None
+    processing: Optional[AppProcessingConfig] = None; api: Optional[AppAPIConfig] = None
+    paths: Optional[AppPathsConfig] = None; cache_settings: Optional[AppCacheSettingsConfig] = None
+    feature_flags: Optional[AppFeatureFlagsConfig] = None; elasticsearch: Optional[AppElasticsearchConfig] = None
 class EnhancedQuery(BaseModel):
-    text: str
-    limit: Optional[int] = 5
-    collection_name: Optional[str] = "documents"
-    enable_optimization: Optional[bool] = True
-    use_cache: Optional[bool] = True
-    context: Optional[Dict[str, Any]] = None
-
+    text: str; limit: Optional[int] = 5; collection_name: Optional[str] = "documents"
+    enable_optimization: Optional[bool] = True; use_cache: Optional[bool] = True; context: Optional[Dict[str, Any]] = None
 class EnhancedSearchResponse(BaseModel):
-    matches: List[dict]
-    query_vector: List[float]
-    optimization_metadata: Optional[Dict[str, Any]] = None
-    cache_hit: Optional[bool] = False
-    response_time_ms: Optional[float] = None
-    system_health: Optional[Dict[str, Any]] = None
-
+    matches: List[dict]; query_vector: List[float]; optimization_metadata: Optional[Dict[str, Any]] = None
+    cache_hit: Optional[bool] = False; response_time_ms: Optional[float] = None; system_health: Optional[Dict[str, Any]] = None
 class SystemStatusResponse(BaseModel):
-    status: str
-    version: str
-    uptime_seconds: float
-    components: Dict[str, Dict[str, Any]]
-    performance: Dict[str, Any]
-    integrations: Dict[str, Any]
+    status: str; version: str; uptime_seconds: float; components: Dict[str, Dict[str, Any]]
+    performance: Dict[str, Any]; integrations: Dict[str, Any]
 
-# Health check functions for monitoring
+
+# --- Core RAG Endpoints ---
+# (search_rag_endpoint, process_documents_endpoint, etc. as previously defined)
+@app.post("/search_rag", response_model=MigratedSearchResponse, tags=["RAG Core"])
+async def search_rag_endpoint(payload: SearchQueryInput, fastapi_req: Request):
+    rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+    if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
+    try:
+        results = await rag_pipeline.search(query=payload.query, limit=payload.limit, filters=payload.filters, categories=payload.categories)
+        return MigratedSearchResponse(results=[SearchResultItem(**res) for res in results])
+    except Exception as e: logger.error(f"Search RAG error: {str(e)}"); raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/process_docs", tags=["RAG Core"])
+async def process_documents_endpoint(payload: ProcessRequestInput, background_tasks: BackgroundTasks, fastapi_req: Request):
+    rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+    if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
+    path = Path(payload.directory_path)
+    if not path.exists() or not path.is_dir(): raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
+    background_tasks.add_task(rag_pipeline.process_documents, path, payload.batch_size)
+    return {"message": f"Started processing documents from {path}"}
+
+@app.get("/system_status_rag", tags=["RAG Core"])
+async def get_system_status_rag_endpoint(fastapi_req: Request):
+    rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+    if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
+    try:
+        loop = asyncio.get_event_loop(); collection_info = await loop.run_in_executor(None, rag_pipeline.get_collection_info)
+        return collection_info
+    except Exception as e: logger.error(f"RAG System status error: {str(e)}"); raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate_response", tags=["RAG Core"])
+async def generate_response_endpoint(payload: GenerateRequestInput, fastapi_req: Request):
+    rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+    if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
+    try:
+        search_results = await rag_pipeline.search(payload.question, limit=payload.limit)
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(None, rag_pipeline.generate_response, payload.question, search_results, payload.template_name)
+        return response
+    except Exception as e: logger.error(f"Generation error: {str(e)}"); raise HTTPException(status_code=500, detail=str(e))
+
+# --- Copilot Endpoints ---
+# (consolidated_chat_with_copilot, consolidated_stream_chat_with_copilot as previously defined)
+@app.post("/copilot/chat", response_model=CopilotResponse, tags=["Copilot"])
+async def consolidated_chat_with_copilot(copilot_req_body: CopilotRequest, agent: CopilotAgent = Depends(get_copilot_agent_dependency), copilot_token: Optional[str] = Depends(verify_copilot_token_dependency), fastapi_req: Request):
+    try:
+        integration_manager = await get_integration_manager()
+        optimization_result = await integration_manager.optimize_query(copilot_req_body.query, copilot_req_body.context)
+        optimized_query = optimization_result["optimized_query"]
+        current_context = copilot_req_body.context
+        if not current_context:
+            rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+            if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized for Copilot context")
+            search_results_rag = await rag_pipeline.search(query=optimized_query, limit=5)
+            current_context = [{"text": sr.get("text"), "metadata": sr.get("metadata"), "score": sr.get("score")} for sr in search_results_rag]
+        agent_request = CopilotRequest(query=optimized_query, conversation_id=copilot_req_body.conversation_id, context=current_context, max_tokens=copilot_req_body.max_tokens)
+        return await agent.get_completion(agent_request)
+    except Exception as e: logger.error(f"Copilot chat error: {e}"); raise HTTPException(status_code=500, detail=f"Copilot chat failed: {str(e)}")
+
+@app.post("/copilot/chat/stream", tags=["Copilot"])
+async def consolidated_stream_chat_with_copilot(copilot_req_body: CopilotRequest, agent: CopilotAgent = Depends(get_copilot_agent_dependency), copilot_token: Optional[str] = Depends(verify_copilot_token_dependency), fastapi_req: Request):
+    try:
+        integration_manager = await get_integration_manager()
+        optimization_result = await integration_manager.optimize_query(copilot_req_body.query, copilot_req_body.context)
+        optimized_query = optimization_result["optimized_query"]
+        current_context = copilot_req_body.context
+        if not current_context:
+            rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+            if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized for Copilot stream context")
+            search_results_rag = await rag_pipeline.search(query=optimized_query, limit=5)
+            current_context = [{"text": sr.get("text"), "metadata": sr.get("metadata"),"score": sr.get("score")} for sr in search_results_rag]
+        agent_request = CopilotRequest(query=optimized_query, conversation_id=copilot_req_body.conversation_id, context=current_context, max_tokens=copilot_req_body.max_tokens, stream=True)
+        async def event_generator():
+            try:
+                async for token_chunk in agent.stream_completion(agent_request):
+                    if token_chunk: yield f"data: {json.dumps({'content': token_chunk})}\n\n"
+            except Exception as e: logger.error(f"Error during Copilot stream: {str(e)}"); yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            finally: yield "data: [DONE]\n\n"
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+    except Exception as e: logger.error(f"Error in Copilot stream chat endpoint: {e}"); raise HTTPException(status_code=500, detail=f"Copilot stream chat failed: {str(e)}")
+
+
+# --- Token Endpoint ---
+@app.post("/token", tags=["Authentication"])
+async def login_for_access_token(
+    fastapi_req: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    auth_manager: AuthManager = Depends(get_auth_manager) # Use dependency injection
+):
+    user = await auth_manager.authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=fastapi_status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password", headers={"WWW-Authenticate": "Bearer"})
+    access_token = auth_manager.create_access_token(user=user)
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+# --- Admin Config Management Endpoints ---
+@app.get("/admin/config", response_model=AppSystemConfig, tags=["Admin"])
+async def get_admin_config_endpoint( # Renamed
+    fastapi_req: Request,
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.ADMIN_READ) # Protect with permission
+):
+    config_manager_instance: ConfigManager = fastapi_req.app.state.config_manager
+    return config_manager_instance.config
+
+@app.post("/admin/config/update", response_model=AppSystemConfig, tags=["Admin"])
+async def update_admin_config_endpoint( # Renamed
+    config_update: ConfigUpdateRequestModel,
+    fastapi_req: Request,
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.ADMIN_WRITE) # Protect with permission
+):
+    config_manager_instance: ConfigManager = fastapi_req.app.state.config_manager
+    try:
+        update_dict = config_update.dict(exclude_unset=True)
+        current_config: AppSystemConfig = config_manager_instance.config
+        for section_name, section_updates in update_dict.items():
+            if hasattr(current_config, section_name) and isinstance(section_updates, dict):
+                section_obj = getattr(current_config, section_name)
+                for key, value in section_updates.items():
+                    if hasattr(section_obj, key): setattr(section_obj, key, value)
+            elif hasattr(current_config, section_name): setattr(current_config, section_name, section_updates)
+        config_manager_instance.save_config()
+        app.state.app_config = config_manager_instance.config
+        logger.info(f"System configuration updated with: {update_dict}")
+        return app.state.app_config
+    except Exception as e:
+        logger.error(f"Failed to update configuration: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
+
+
+# --- Original Endpoints from enhanced_api.py (Health, Status, Search_Direct_Qdrant, Admin) ---
 @health_check("qdrant")
 async def check_qdrant_health():
-    """Health check for Qdrant vector database"""
     try:
-        collections = qdrant_client.get_collections()
+        rag_pipeline_instance = app.state.rag_pipeline if hasattr(app.state, 'rag_pipeline') else None
+        client_to_use = rag_pipeline_instance.client if rag_pipeline_instance and hasattr(rag_pipeline_instance, 'client') else qdrant_client
+        collections = client_to_use.get_collections()
         return {"status": "healthy", "collections_count": len(collections.collections)}
-    except Exception as e:
-        raise Exception(f"Qdrant health check failed: {e}")
+    except Exception as e: raise Exception(f"Qdrant health check failed: {e}")
 
 @health_check("embedding_provider")
 async def check_embedding_provider_health():
-    """Health check for embedding provider"""
     try:
-        provider = get_embedding_provider()
-        # Test with a simple embedding
+        provider = get_embedding_provider_dependency()
         test_embedding = await provider.generate_embeddings("health check test")
         return {"status": "healthy", "embedding_dimension": len(test_embedding[0])}
-    except Exception as e:
-        raise Exception(f"Embedding provider health check failed: {e}")
+    except Exception as e: raise Exception(f"Embedding provider health check failed: {e}")
 
-# Enhanced API endpoints with integrated optimizations
-@app.get("/", response_model=Dict[str, str])
-async def root():
-    """Root endpoint with system information"""
-    return {
-        "message": "Enhanced RAG API with Optimization",
-        "version": "2.0.0",
-        "documentation": "/docs",
-        "health": "/health",
-        "status": "/status"
-    }
+@app.get("/", response_model=Dict[str, str], include_in_schema=False)
+async def root_redirect(): return RedirectResponse(url="/docs")
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
 @with_recovery(component_name="api_health", severity=ErrorSeverity.LOW)
-async def health_check_endpoint():
-    """Enhanced health check endpoint"""
-    try:
-        # Get error recovery system health
-        recovery_system = get_error_recovery_system()
-        system_health = recovery_system.get_system_health()
-        
-        # Get integration manager stats
-        try:
-            integration_manager = await get_integration_manager()
-            integration_stats = integration_manager.get_integration_stats()
-        except Exception:
-            integration_stats = {"status": "not_initialized"}
-        
-        # Get auto-scaler stats
-        try:
-            auto_scaler = await get_auto_scaler()
-            scaling_stats = auto_scaler.get_scaling_stats()
-        except Exception:
-            scaling_stats = {"status": "not_initialized"}
-        
-        return {
-            "status": "healthy" if system_health["overall_state"] == "healthy" else "degraded",
-            "timestamp": datetime.now().isoformat(),
-            "system_health": system_health,
-            "integration_stats": integration_stats,
-            "scaling_stats": scaling_stats,
-            "components": {
-                "qdrant": "healthy",
-                "embedding_provider": "healthy",
-                "error_recovery": "active" if settings.enable_error_recovery else "disabled",
-                "auto_scaling": "active" if settings.enable_auto_scaling else "disabled",
-                "monitoring": "active" if settings.enable_monitoring else "disabled"
-            }
-        }
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-        )
+async def health_check_endpoint_main():
+    recovery_system = get_error_recovery_system()
+    system_health_val = recovery_system.get_system_health()
+    integration_stats = {}
+    if hasattr(app.state, 'integration_manager_instance') and app.state.integration_manager_instance:
+        integration_stats = app.state.integration_manager_instance.get_integration_stats()
+    scaling_stats = {}
+    if app_config.feature_flags.enable_auto_scaling: # Check flag before getting scaler
+        auto_scaler_instance = await get_auto_scaler()
+        if auto_scaler_instance: scaling_stats = auto_scaler_instance.get_scaling_stats()
+    return {"status": "healthy" if system_health_val["overall_state"] == "healthy" else "degraded",
+            "timestamp": datetime.now().isoformat(), "system_health": system_health_val,
+            "integration_stats": integration_stats, "scaling_stats": scaling_stats,
+            "components": {"qdrant": (await check_qdrant_health())["status"],
+                           "embedding_provider": (await check_embedding_provider_health())["status"],
+                           "error_recovery": "active" if app_config.feature_flags.enable_error_recovery else "disabled",
+                           "auto_scaling": "active" if app_config.feature_flags.enable_auto_scaling else "disabled",
+                           "monitoring": "active" if app_config.feature_flags.enable_monitoring else "disabled"}}
 
-@app.get("/status", response_model=SystemStatusResponse)
+@app.get("/status", response_model=SystemStatusResponse, tags=["System"])
 @with_recovery(component_name="api_status", severity=ErrorSeverity.LOW)
-async def system_status():
-    """Comprehensive system status endpoint"""
-    start_time = app.state.start_time if hasattr(app.state, 'start_time') else time.time()
-    uptime = time.time() - start_time
-    
-    # Get component statuses
-    components = {}
-    
-    # Integration Manager
-    try:
-        integration_manager = await get_integration_manager()
-        components["integration_manager"] = integration_manager.get_integration_stats()
-    except Exception as e:
-        components["integration_manager"] = {"status": "error", "error": str(e)}
-    
-    # Auto Scaler
-    try:
-        auto_scaler = await get_auto_scaler()
-        components["auto_scaler"] = auto_scaler.get_scaling_stats()
-    except Exception as e:
-        components["auto_scaler"] = {"status": "error", "error": str(e)}
-    
-    # Error Recovery
-    try:
-        recovery_system = get_error_recovery_system()
-        components["error_recovery"] = recovery_system.get_error_statistics()
-    except Exception as e:
-        components["error_recovery"] = {"status": "error", "error": str(e)}
-    
-    # Performance metrics
-    performance = {
-        "rate_limiter": rate_limiter.get_stats(),
-        "settings": {
-            "batch_size": settings.batch_size,
-            "cpu_workers": settings.cpu_workers,
-            "memory_cache_mb": settings.memory_cache_mb
-        }
-    }
-    
-    # Integration status
-    integrations = {
-        "auto_scaling_enabled": settings.enable_auto_scaling,
-        "error_recovery_enabled": settings.enable_error_recovery,
-        "monitoring_enabled": settings.enable_monitoring
-    }
-    
-    return SystemStatusResponse(
-        status="operational",
-        version="2.0.0",
-        uptime_seconds=uptime,
-        components=components,
-        performance=performance,
-        integrations=integrations
-    )
+async def system_status_main():
+    start_time_val = app.state.start_time if hasattr(app.state, 'start_time') else time.time()
+    uptime = time.time() - start_time_val
+    components_val = {}
+    if hasattr(app.state, 'integration_manager_instance') and app.state.integration_manager_instance:
+        components_val["integration_manager"] = app.state.integration_manager_instance.get_integration_stats()
+    if app_config.feature_flags.enable_auto_scaling:
+        auto_scaler_instance = await get_auto_scaler()
+        if auto_scaler_instance: components_val["auto_scaler"] = auto_scaler_instance.get_scaling_stats()
+    if app_config.feature_flags.enable_error_recovery:
+        recovery_system_instance = get_error_recovery_system()
+        if recovery_system_instance: components_val["error_recovery"] = recovery_system_instance.get_error_statistics()
+    performance_val = {"rate_limiter": rate_limiter.get_stats(),
+                       "settings": {"batch_size": app_config.model.batch_size,
+                                    "cpu_workers": app_config.processing.max_workers,}}
+    integrations_val = {"auto_scaling_enabled": app_config.feature_flags.enable_auto_scaling,
+                        "error_recovery_enabled": app_config.feature_flags.enable_error_recovery,
+                        "monitoring_enabled": app_config.feature_flags.enable_monitoring}
+    return SystemStatusResponse(status="operational", version=app.version, uptime_seconds=uptime,
+                                components=components_val, performance=performance_val, integrations=integrations_val)
 
-@app.post("/search", response_model=EnhancedSearchResponse)
-@with_recovery(component_name="api_search", severity=ErrorSeverity.MEDIUM)
-async def enhanced_search(query: EnhancedQuery, provider=Depends(get_embedding_provider)):
-    """Enhanced search with optimization and error recovery"""
+@app.post("/search_direct_qdrant", response_model=EnhancedSearchResponse, tags=["Search"])
+@with_recovery(component_name="api_search_direct", severity=ErrorSeverity.MEDIUM)
+async def search_direct_qdrant_endpoint(query: EnhancedQuery, provider=Depends(get_embedding_provider_dependency), fastapi_req: Request):
     start_time = time.time()
-    
     try:
-        # Get integration manager for optimization
-        integration_manager = await get_integration_manager()
-        
-        # Check cache first if enabled
+        integration_manager = await get_integration_manager() # Assumes this is fine to call multiple times or is singleton from app.state
         cache_hit = False
-        cached_result = None
         if query.use_cache:
             cached_result = await integration_manager.get_cached_result(query.text)
             if cached_result:
-                cache_hit = True
-                response_time = (time.time() - start_time) * 1000
-                return EnhancedSearchResponse(
-                    matches=cached_result["matches"],
-                    query_vector=cached_result["query_vector"],
-                    optimization_metadata=cached_result.get("optimization_metadata", {}),
-                    cache_hit=True,
-                    response_time_ms=response_time
-                )
-        
-        # Optimize query if enabled
-        optimization_metadata = {}
-        optimized_query_text = query.text
-        
+                cache_hit = True; response_time = (time.time() - start_time) * 1000
+                return EnhancedSearchResponse(matches=cached_result["matches"], query_vector=cached_result["query_vector"],
+                                            optimization_metadata=cached_result.get("optimization_metadata", {}),
+                                            cache_hit=True, response_time_ms=response_time)
+        optimization_metadata = {}; optimized_query_text = query.text
         if query.enable_optimization:
             optimization_result = await integration_manager.optimize_query(query.text, query.context)
-            optimized_query_text = optimization_result["optimized_query"]
-            optimization_metadata = optimization_result["metadata"]
-        
-        # Generate embeddings
+            optimized_query_text = optimization_result["optimized_query"]; optimization_metadata = optimization_result["metadata"]
         query_vector = (await provider.generate_embeddings(optimized_query_text))[0]
-        
-        # Search Qdrant
-        search_result = qdrant_client.search(
-            collection_name=query.collection_name,
-            query_vector=query_vector,
-            limit=query.limit
-        )
-        
-        # Format results
-        matches = [{
-            "id": result.id,
-            "score": result.score,
-            "payload": result.payload
-        } for result in search_result]
-        
-        # Cache result if enabled
-        result_to_cache = {
-            "matches": matches,
-            "query_vector": query_vector,
-            "optimization_metadata": optimization_metadata
-        }
-        
-        if query.use_cache:
-            await integration_manager.cache_result(query.text, result_to_cache, ttl=3600)  # 1 hour TTL
-        
-        # Calculate response time
-        response_time = (time.time() - start_time) * 1000
-        
-        # Get system health
-        system_health = None
+        search_result = qdrant_client.search(collection_name=query.collection_name, query_vector=query_vector, limit=query.limit)
+        matches = [{"id": result.id, "score": result.score, "payload": result.payload} for result in search_result]
+        result_to_cache = {"matches": matches, "query_vector": query_vector, "optimization_metadata": optimization_metadata}
+        if query.use_cache: await integration_manager.cache_result(query.text, result_to_cache, ttl=app_config.cache_settings.ttl)
+        response_time = (time.time() - start_time) * 1000; system_health = None
         try:
             recovery_system = get_error_recovery_system()
-            health_data = recovery_system.get_system_health()
-            system_health = {"overall_state": health_data["overall_state"]}
-        except Exception:
-            pass
-        
-        return EnhancedSearchResponse(
-            matches=matches,
-            query_vector=query_vector,
-            optimization_metadata=optimization_metadata,
-            cache_hit=cache_hit,
-            response_time_ms=response_time,
-            system_health=system_health
-        )
-        
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+            health_data = recovery_system.get_system_health(); system_health = {"overall_state": health_data["overall_state"]}
+        except Exception: pass
+        return EnhancedSearchResponse(matches=matches, query_vector=query_vector, optimization_metadata=optimization_metadata,
+                                    cache_hit=cache_hit, response_time_ms=response_time, system_health=system_health)
+    except Exception as e: logger.error(f"Direct Qdrant Search error: {e}"); raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
-@app.get("/collections")
-@with_recovery(component_name="api_collections", severity=ErrorSeverity.LOW)
-async def list_collections():
-    """List all collections with enhanced error handling"""
-    try:
-        collections = qdrant_client.get_collections()
-        return {
-            "collections": [
-                {
-                    "name": collection.name,
-                    "status": collection.status,
-                    "vectors_count": collection.vectors_count,
-                    "indexed_vectors_count": collection.indexed_vectors_count
-                }
-                for collection in collections.collections
-            ]
-        }
-    except Exception as e:
-        logger.error(f"Collections listing error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list collections: {str(e)}")
+@app.get("/admin/scaling/status", tags=["Admin"])
+@with_recovery(component_name="admin_scaling_status", severity=ErrorSeverity.LOW)
+async def get_admin_scaling_status(fastapi_req: Request, current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.ADMIN_READ)): # type: ignore
+    auto_scaler = await get_auto_scaler()
+    stats = auto_scaler.get_scaling_stats(); recent_decisions = auto_scaler.get_recent_decisions(10)
+    return {"scaling_stats": stats, "recent_decisions": recent_decisions, "enabled": app_config.feature_flags.enable_auto_scaling}
 
-@app.post("/copilot/chat", response_model=CopilotResponse)
-@with_recovery(component_name="api_copilot", severity=ErrorSeverity.MEDIUM)
-async def chat_with_copilot(
-    request: CopilotRequest,
-    agent: CopilotAgent = Depends(get_copilot_agent),
-    provider=Depends(get_embedding_provider)
-):
-    """Enhanced Copilot chat with optimization and error recovery"""
-    try:
-        # Get integration manager for optimization
-        integration_manager = await get_integration_manager()
-        
-        # Optimize query if needed
-        optimization_result = await integration_manager.optimize_query(request.query, request.context)
-        optimized_query = optimization_result["optimized_query"]
-        
-        # If no context provided, get relevant documents from Qdrant
-        if not request.context:
-            # Get query embeddings
-            query_vector = (await provider.generate_embeddings(optimized_query))[0]
-            
-            # Search Qdrant
-            search_result = qdrant_client.search(
-                collection_name="documents",
-                query_vector=query_vector,
-                limit=5
-            )
-            
-            # Add search results to context
-            request.context = [{
-                "text": result.payload.get("text"),
-                "metadata": {k: v for k, v in result.payload.items() if k != "text"},
-                "score": result.score
-            } for result in search_result]
-        
-        # Update request with optimized query
-        enhanced_request = CopilotRequest(
-            query=optimized_query,
-            conversation_id=request.conversation_id,
-            context=request.context,
-            max_tokens=request.max_tokens
-        )
-        
-        return await agent.get_completion(enhanced_request)
-        
-    except Exception as e:
-        logger.error(f"Copilot chat error: {e}")
-        raise HTTPException(status_code=500, detail=f"Copilot chat failed: {str(e)}")
+@app.post("/admin/scaling/force", tags=["Admin"])
+@with_recovery(component_name="admin_scaling_force", severity=ErrorSeverity.MEDIUM)
+async def force_admin_scaling_action(resource_type: str, target_value: int, background_tasks: BackgroundTasks, fastapi_req: Request, current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.ADMIN_WRITE)): # type: ignore
+    try: rt = ResourceType(resource_type)
+    except ValueError: raise HTTPException(status_code=400, detail=f"Invalid resource type: {resource_type}")
+    auto_scaler = await get_auto_scaler()
+    async def perform_scaling(): success = await auto_scaler.force_scaling_action(rt, target_value); logger.info(f"Forced scaling action result: {success}")
+    background_tasks.add_task(perform_scaling)
+    return {"message": f"Scaling action initiated for {resource_type} to {target_value}"}
 
-# Auto-scaling management endpoints
-@app.get("/admin/scaling/status")
-@with_recovery(component_name="admin_scaling", severity=ErrorSeverity.LOW)
-async def get_scaling_status():
-    """Get auto-scaling status"""
-    try:
-        auto_scaler = await get_auto_scaler()
-        stats = auto_scaler.get_scaling_stats()
-        recent_decisions = auto_scaler.get_recent_decisions(10)
-        
-        return {
-            "scaling_stats": stats,
-            "recent_decisions": recent_decisions,
-            "enabled": settings.enable_auto_scaling
-        }
-    except Exception as e:
-        logger.error(f"Scaling status error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get scaling status: {str(e)}")
-
-@app.post("/admin/scaling/force")
-@with_recovery(component_name="admin_scaling", severity=ErrorSeverity.MEDIUM)
-async def force_scaling_action(
-    resource_type: str,
-    target_value: int,
-    background_tasks: BackgroundTasks
-):
-    """Force a scaling action"""
-    try:
-        # Validate resource type
-        try:
-            rt = ResourceType(resource_type)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid resource type: {resource_type}")
-        
-        auto_scaler = await get_auto_scaler()
-        
-        async def perform_scaling():
-            success = await auto_scaler.force_scaling_action(rt, target_value)
-            logger.info(f"Forced scaling action result: {success}")
-        
-        background_tasks.add_task(perform_scaling)
-        
-        return {
-            "message": f"Scaling action initiated for {resource_type} to {target_value}",
-            "resource_type": resource_type,
-            "target_value": target_value
-        }
-    except Exception as e:
-        logger.error(f"Force scaling error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to force scaling: {str(e)}")
-
-# Error recovery management endpoints
-@app.get("/admin/errors/statistics")
-@with_recovery(component_name="admin_errors", severity=ErrorSeverity.LOW)
-async def get_error_statistics():
-    """Get error recovery statistics"""
-    try:
-        recovery_system = get_error_recovery_system()
-        stats = recovery_system.get_error_statistics()
-        recent_errors = recovery_system.get_recent_errors(20)
-        
-        return {
-            "statistics": stats,
-            "recent_errors": recent_errors
-        }
-    except Exception as e:
-        logger.error(f"Error statistics error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get error statistics: {str(e)}")
-
-# Startup event to initialize enhancements
-@app.on_event("startup")
-async def startup_event():
-    """Initialize enhancement systems on startup"""
-    app.state.start_time = time.time()
-    logger.info("Starting Enhanced RAG API v2.0.0...")
-    
-    try:
-        # Initialize integration system
-        if settings.enable_error_recovery or settings.enable_auto_scaling or settings.enable_monitoring:
-            success = await initialize_integration()
-            if success:
-                logger.info("Integration system initialized successfully")
-            else:
-                logger.warning("Integration system initialization failed")
-        
-        logger.info("Enhanced RAG API startup complete")
-        
-    except Exception as e:
-        logger.error(f"Startup error: {e}")
-
-# Shutdown event
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    logger.info("Shutting down Enhanced RAG API...")
-    
-    try:
-        # Shutdown integration manager
-        integration_manager = await get_integration_manager()
-        await integration_manager.shutdown()
-        
-        # Shutdown auto-scaler
-        auto_scaler = await get_auto_scaler()
-        await auto_scaler.shutdown()
-        
-        # Shutdown error recovery
-        recovery_system = get_error_recovery_system()
-        await recovery_system.shutdown()
-        
-        logger.info("Enhanced RAG API shutdown complete")
-        
-    except Exception as e:
-        logger.error(f"Shutdown error: {e}")
+@app.get("/admin/errors/statistics", tags=["Admin"])
+@with_recovery(component_name="admin_errors_stats", severity=ErrorSeverity.LOW)
+async def get_admin_error_statistics(fastapi_req: Request, current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.ADMIN_READ)): # type: ignore
+    recovery_system = get_error_recovery_system()
+    stats = recovery_system.get_error_statistics(); recent_errors = recovery_system.get_recent_errors(20)
+    return {"statistics": stats, "recent_errors": recent_errors}
 
 if __name__ == "__main__":
     uvicorn.run(
         "enhanced_api:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,  # Disable reload in production
-        workers=1,  # Single worker for proper state management
+        host=app_config.api.host,
+        port=app_config.api.port,
+        workers=app_config.api.workers,
+        reload=False,
         log_level="info"
     )

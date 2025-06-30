@@ -652,8 +652,8 @@ class RAGPipeline:
         """
         return self.feedback_analytics.trigger_model_finetune()
 
-    def generate_response(self, question: str, search_results: List[Dict[str, Any]], template_name: str = "qa_prompt") -> Dict[str, Any]:
-        """Generate a response to a question using the retrieved context
+    async def generate_response(self, question: str, search_results: List[Dict[str, Any]], template_name: str = "qa_prompt") -> Dict[str, Any]: # Changed to async
+        """Generate a response to a question using the retrieved context. Now asynchronous.
         
         Args:
             question: The user's question

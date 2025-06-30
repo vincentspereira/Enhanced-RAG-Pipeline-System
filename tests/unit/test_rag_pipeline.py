@@ -150,8 +150,65 @@ class TestRAGPipelineAsyncInteractions(unittest.TestCase): # Inherit from unitte
             doc_processor=mock_doc_processor_instance,
             embedding_generator=mock_emb_gen_instance
         )
-        results = await pipeline._keyword_search(query="test query", limit=2)
+        results = await pipeline._keyword_search(query="test query", limit=2) # type: ignore
         self.assertEqual(results, [])
+
+    @pytest.mark.asyncio # Ensure test is marked async if not already by class
+    async def test_generate_response_async(self, mock_app_config_es_enabled):
+        """Test the async generate_response method."""
+        mock_doc_processor_instance = MockDocumentProcessor()
+        mock_emb_gen_instance = MockEmbeddingGenerator()
+
+        pipeline = RAGPipeline(
+            app_config=mock_app_config_es_enabled,
+            doc_processor=mock_doc_processor_instance,
+            embedding_generator=mock_emb_gen_instance
+        )
+
+        # Mock LLMRegistry and the llm_service.generate call
+        # The llm_service.generate is sync, so it will be called via run_in_executor
+        mock_llm_service = MagicMock()
+        mock_llm_service.generate = MagicMock(return_value="Mocked LLM answer")
+
+        with patch('Scripts.rag_pipeline.LLMRegistry.get_default_llm', return_value=mock_llm_service), \
+             patch('asyncio.get_event_loop') as mock_get_loop:
+
+            mock_loop = MagicMock()
+            # Mock run_in_executor to simulate the sync LLM call
+            mock_loop.run_in_executor = AsyncMock(return_value="Mocked LLM answer")
+            mock_get_loop.return_value = mock_loop
+
+            question = "What is RAG?"
+            search_results_input = [{"text": "RAG context...", "metadata": {}, "score": 0.9}]
+            template_name = "test_qa_prompt"
+
+            # Mock prompt manager and template
+            mock_template = MagicMock()
+            mock_template.format.return_value = "Formatted prompt for LLM"
+            mock_template.version = "1.0"
+            pipeline.prompt_manager = MagicMock()
+            pipeline.prompt_manager.library.get_template.return_value = mock_template
+            pipeline.prompt_manager.update_version_metrics = MagicMock()
+
+
+            response_dict = await pipeline.generate_response(question, search_results_input, template_name)
+
+            # Assertions
+            pipeline.prompt_manager.library.get_template.assert_called_with(template_name)
+            mock_template.format.assert_called_with(context=unittest.mock.ANY, question=question) # Check context formatting if needed
+
+            # Check that llm_service.generate was called via run_in_executor
+            mock_loop.run_in_executor.assert_awaited_once_with(
+                None,
+                mock_llm_service.generate,
+                "Formatted prompt for LLM"
+            )
+
+            self.assertEqual(response_dict["answer"], "Mocked LLM answer")
+            self.assertEqual(response_dict["question"], question)
+            self.assertTrue(len(response_dict["sources"]) > 0 if search_results_input else len(response_dict["sources"]) == 0)
+            pipeline.prompt_manager.update_version_metrics.assert_called_once()
+
 
     @patch('asyncio.get_event_loop') # For _semantic_search if it uses run_in_executor
     async def test_search_calls_async_keyword_search(self, mock_get_loop_search, mock_app_config_es_enabled):

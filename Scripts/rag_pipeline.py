@@ -131,23 +131,49 @@ class CacheManager:
         """Generate cache key"""
         return hashlib.md5(key.encode()).hexdigest()
 
+# External RAG Pipeline components (assuming these are imported elsewhere or become part of this class)
+from qdrant_client import QdrantClient, models as qdrant_models # Assuming 'models' is used like this
+from sentence_transformers import SentenceTransformer
+
+
 class RAGPipeline:
-    def __init__(self, collection_name: str = "documents", model_name: str = "all-MiniLM-L6-v2"):
-        self.collection_name = collection_name
-        self.model_name = model_name
+    def __init__(self,
+                 app_config: SystemConfig, # Changed to accept SystemConfig from manager.py
+                 doc_processor: DocumentProcessor, # Pass instances
+                 embedding_generator: EmbeddingGenerator # Pass instances
+                ):
+        self.app_config = app_config
+        self.doc_processor = doc_processor
+        self.embedding_generator = embedding_generator
+
+        self.collection_name = app_config.vector_store.collection_name
+        self.embedding_model_name = app_config.model.embedding_model # Use from config
+
+        # Initialize Qdrant client from config
+        self.client = QdrantClient(
+            host=app_config.vector_store.host,
+            port=app_config.vector_store.port
+            # Potentially add other Qdrant client configs like api_key, https, etc.
+        )
         
-        # Initialize Qdrant client
-        self.client = QdrantClient("localhost", port=6333)
-        
-        # Initialize embedding model
-        self.model = SentenceTransformer(model_name)
-        if torch.cuda.is_available():
+        # Initialize embedding model from config
+        # This assumes SentenceTransformer can take model_name and device
+        self.model = SentenceTransformer(self.embedding_model_name)
+        if app_config.model.device == "cuda" and torch.cuda.is_available():
             self.model = self.model.to('cuda')
-            
-        # Initialize search components
-        self.search_config = SearchConfig()
-        self.cache_config = CacheConfig()
-        self.cache = CacheManager(self.cache_config)
+        else:
+            self.model = self.model.to('cpu') # Default to CPU if cuda not available or specified
+
+        # Initialize search components - these could also be made configurable
+        # For now, keeping their direct instantiation but they could take app_config parts
+        self.search_config = SearchConfig(
+            cache_dir=str(Path(app_config.paths.cache_dir) / "search_cache") # Use configured base cache_dir
+        )
+        self.cache_config = CacheConfig(
+            cache_dir=str(Path(app_config.paths.cache_dir) / "rag_pipeline_cache"), # Specific cache for RAG pipeline
+            ttl=app_config.cache_settings.ttl
+        )
+        self.cache = CacheManager(self.cache_config) # This is the LMDB cache
         self.nlp = self._initialize_nlp()
         self.vectorizer = TfidfVectorizer(stop_words='english')
         

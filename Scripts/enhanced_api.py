@@ -170,43 +170,43 @@ async def enhanced_middleware(request: Request, call_next: Callable):
 # Mount v1 router
 app.include_router(v1_router, prefix="/api/v1")
 
-# Enhanced settings with optimization configurations
-class EnhancedSettings:
-    def __init__(self):
-        # Basic settings
-        self.embedding_provider = "ollama"
-        self.embedding_model = "snowflake-arctic-embed2:latest"
-        self.cache_dir = "embeddings_cache"
-        self.batch_size = int(os.getenv("RAG_BATCH_SIZE", "32"))
-        
-        # API keys
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        self.openai_organization = os.getenv("OPENAI_ORGANIZATION")
-        self.copilot_api_key = os.getenv("GITHUB_COPILOT_API_KEY")
-        self.copilot_endpoint = os.getenv("GITHUB_COPILOT_ENDPOINT", 
-                                        "https://api.githubcopilot.com/chat/completions")
-        
-        # Enhancement settings
-        self.enable_auto_scaling = os.getenv("ENABLE_AUTO_SCALING", "true").lower() == "true"
-        self.enable_error_recovery = os.getenv("ENABLE_ERROR_RECOVERY", "true").lower() == "true"
-        self.enable_monitoring = os.getenv("ENABLE_MONITORING", "true").lower() == "true"
-        self.cpu_workers = int(os.getenv("RAG_CPU_WORKERS", "4"))
-        self.memory_cache_mb = int(os.getenv("RAG_MEMORY_CACHE_MB", "2048"))
+# Import ConfigManager
+from config.manager import ConfigManager, SystemConfig as AppSystemConfig # Renamed to avoid conflict
 
-settings = EnhancedSettings()
+# Load environment variables
+load_dotenv()
+
+# Initialize ConfigManager
+# Assuming config.yaml is in the root or a predefined location accessible here
+# For instance, if enhanced_api.py is in Scripts/, and config.yaml is at root:
+config_file_path = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+config_manager = ConfigManager(config_path=config_file_path)
+app_config: AppSystemConfig = config_manager.config
+
+
+# Initialize Qdrant client using ConfigManager
+qdrant_client = QdrantClient(
+    host=app_config.vector_store.host,
+    port=app_config.vector_store.port
+)
+
 
 # Enhanced dependency providers
 @lru_cache()
 def get_embedding_provider():
     """Get embedding provider with error recovery"""
     try:
+        # TODO: Ensure create_embedding_provider can take individual model config args
+        # For now, assuming it can use environment variables or direct args if needed
+        # Best would be to pass app_config.model.embedding_model_config if compatible
         return create_embedding_provider(
-            provider=settings.embedding_provider,
-            model_name=settings.embedding_model,
-            cache_dir=settings.cache_dir,
-            batch_size=settings.batch_size,
-            api_key=settings.openai_api_key,
-            organization=settings.openai_organization
+            provider=app_config.model.llm_service, # Assuming embedding_provider is similar to llm_service type
+            model_name=app_config.model.embedding_model,
+            cache_dir=app_config.paths.cache_dir, # Using general cache_dir from PathsConfig
+            batch_size=app_config.model.batch_size, # model.batch_size might be general batch_size
+            # api_key and organization would ideally come from a more secure config or env
+            # For OpenAI, these would be os.getenv("OPENAI_API_KEY") etc.
+            # This part needs alignment with how create_embedding_provider consumes config.
         )
     except Exception as e:
         logger.error(f"Failed to create embedding provider: {e}")
@@ -215,12 +215,17 @@ def get_embedding_provider():
 
 async def get_copilot_agent():
     """Get Copilot agent with error recovery"""
-    if not settings.copilot_api_key:
+    # Assuming GITHUB_COPILOT_API_KEY and GITHUB_COPILOT_ENDPOINT are set in environment
+    # or could be part of a new 'integrations_config' section in SystemConfig
+    copilot_api_key = os.getenv("GITHUB_COPILOT_API_KEY")
+    copilot_endpoint = os.getenv("GITHUB_COPILOT_ENDPOINT", "https://api.githubcopilot.com/chat/completions")
+
+    if not copilot_api_key:
         raise HTTPException(status_code=500, detail="GitHub Copilot API key not configured")
     
     agent = CopilotAgent(
-        api_key=settings.copilot_api_key,
-        endpoint=settings.copilot_endpoint
+        api_key=copilot_api_key,
+        endpoint=copilot_endpoint
     )
     async with agent as session:
         yield session

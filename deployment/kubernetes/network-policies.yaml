@@ -1,0 +1,176 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all-ingress
+  namespace: rag-pipeline
+spec:
+  podSelector: {} # Selects all pods in the namespace
+  policyTypes:
+  - Ingress
+  # No ingress rules defined, meaning all ingress traffic is denied by default.
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-rag-api
+  namespace: rag-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: rag-pipeline-api # Selects the RAG API pods
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    # Option 1: Allow from a specific Ingress Controller (using namespace and pod selectors)
+    # - namespaceSelector:
+    #     matchLabels:
+    #       kubernetes.io/metadata.name: ingress-nginx # Or your ingress controller's namespace
+    #   podSelector:
+    #     matchLabels:
+    #       app.kubernetes.io/name: ingress-nginx # Or your ingress controller's pod label
+    # Option 2: Allow from any pod in a specific namespace (e.g., if traffic comes from another app in a 'frontend' namespace)
+    # - namespaceSelector:
+    #     matchLabels:
+    #       team: frontend-apps
+    # Option 3: Allow from specific IP blocks (e.g., company VPN, specific external IPs)
+    # - ipBlock:
+    #     cidr: 192.168.1.0/24 # Replace with actual CIDR
+    # For now, as a placeholder, allow from any pod in the same namespace if not using an Ingress Controller for direct access.
+    # Or, if using an Ingress Controller, the selectors above are more appropriate.
+    # This example allows from any pod within the 'rag-pipeline' namespace itself,
+    # and assumes an Ingress Controller would be configured separately if external access is needed.
+    # To be more restrictive, specify the source explicitly.
+    # If using an Ingress controller, uncomment and configure the namespace/pod selectors above.
+    # For simplicity here, let's assume for now we might allow from within the namespace for other services if any.
+    # A common pattern is to only allow from the ingress controller.
+    - namespaceSelector: {} # Allows from any pod in any namespace if not further restricted (typically too permissive)
+                           # More realistically, for an Ingress:
+                           # namespaceSelector:
+                           #   matchLabels:
+                           #     name: ingress-nginx-namespace # Example
+                           # podSelector:
+                           #   matchLabels:
+                           #     app: ingress-nginx           # Example
+    ports:
+    - protocol: TCP
+      port: 8000 # The container port of rag-pipeline-api
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-qdrant
+  namespace: rag-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: qdrant # Selects the Qdrant pods
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: rag-pipeline-api # Allow traffic only from RAG API pods
+    ports:
+    - protocol: TCP
+      port: 6333 # Qdrant's gRPC port
+    - protocol: TCP
+      port: 6334 # Qdrant's HTTP REST port (if used)
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress-from-rag-api
+  namespace: rag-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: rag-pipeline-api # Selects the RAG API pods
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector: {} # Allows to all namespaces for kube-dns
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # Note: If using a managed K8s service (EKS, GKE, AKS), their internal DNS might use different selectors or IP ranges.
+  # This policy is a common starting point.
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-egress-from-rag-api-to-qdrant
+  namespace: rag-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: rag-pipeline-api # Selects the RAG API pods
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: qdrant # Allow traffic to Qdrant pods
+    ports:
+    - protocol: TCP
+      port: 6333 # Qdrant's gRPC port
+    - protocol: TCP
+      port: 6334 # Qdrant's HTTP REST port (if used by API)
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-limited-external-egress-from-rag-api # Example for S3 or model providers
+  namespace: rag-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: rag-pipeline-api
+  policyTypes:
+  - Egress
+  egress:
+  # Allow egress to public internet on HTTPS for specific needs (e.g., model downloads, S3)
+  # This is a broad rule. For stricter security, use specific IP blocks or FQDNs if your CNI supports it.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0 # Allows all outbound IPs
+        except: # Example: block access to known malicious IP ranges or internal non-prod ranges
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443 # HTTPS
+  # Add other specific egress rules as needed, e.g., to a specific database if not in-cluster.
+  # Example: Egress to an external PostgreSQL database
+  # - to:
+  #   - ipBlock:
+  #       cidr: <your-external-db-ip>/32
+  #   ports:
+  #   - protocol: TCP
+  #     port: 5432
+
+# Note on Network Policies:
+# 1. A CNI (Container Network Interface) plugin that supports NetworkPolicy (e.g., Calico, Cilium, Weave)
+#    must be installed in your Kubernetes cluster for these policies to take effect.
+# 2. These are examples and should be reviewed and tailored to the specific network communication
+#    patterns and security requirements of your application.
+# 3. Start with deny-all and incrementally add allow policies for required traffic.
+# 4. For external services (like S3, Hugging Face, OpenAI), if your cluster uses a NAT gateway or egress proxy
+#    with a fixed IP, you might be able to restrict egress to those specific IPs instead of 0.0.0.0/0 on port 443.
+# 5. If using a service mesh like Istio, it provides its own powerful traffic management and security policies
+#    that can complement or replace Kubernetes NetworkPolicies.
+---

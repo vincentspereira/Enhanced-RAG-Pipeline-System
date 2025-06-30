@@ -36,10 +36,25 @@ spec:
       labels:
         app: rag-pipeline-api
     spec:
+      securityContext: # Pod-level security context
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        runAsNonRoot: true
       containers:
       - name: rag-pipeline-api
         # IMPORTANT: Replace with your actual image registry and version/tag for production
         image: your-registry/rag-pipeline:<VERSION>
+        securityContext: # Container-level security context
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          # Note: For GPU access with nvidia.com/gpu, specific capabilities might be needed if dropping ALL.
+          # However, the NVIDIA device plugin usually handles this. If issues arise, review required capabilities.
+          # For example, some setups might require adding back 'SYS_ADMIN' or specific driver-related caps,
+          # but this is less common with modern device plugins. Start with dropping ALL.
+          readOnlyRootFilesystem: false # Set to true if possible, but app needs to write to /app/cache, /app/logs if not on PVs
         ports:
         - containerPort: 8000
         readinessProbe:
@@ -149,14 +164,43 @@ spec:
       labels:
         app: qdrant
     spec:
+      securityContext: # Pod-level security context for Qdrant
+        runAsUser: 1002 # Different UID for Qdrant, or use Qdrant's default if known
+        runAsGroup: 1002
+        fsGroup: 1002 # Ensures the process can write to the volume
+        runAsNonRoot: true
       containers:
       - name: qdrant
         image: qdrant/qdrant:latest
+        securityContext: # Container-level security context for Qdrant
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          # Qdrant official image runs as non-root. If specific capabilities were needed, they'd be added here.
+          readOnlyRootFilesystem: true # Qdrant should only need to write to its data volume
         ports:
         - containerPort: 6333
+        # Add liveness/readiness probes for Qdrant
+        readinessProbe:
+          httpGet:
+            path: /health # Qdrant's health endpoint
+            port: 6333 # Or 6334 if REST port is preferred for health
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 6333
+          initialDelaySeconds: 60
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
         volumeMounts:
         - name: qdrant-storage
-          mountPath: /qdrant/storage
+          mountPath: /qdrant/storage # Qdrant writes data here
   volumeClaimTemplates:
   - metadata:
       name: qdrant-storage

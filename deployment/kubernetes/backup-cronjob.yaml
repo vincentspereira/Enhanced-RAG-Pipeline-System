@@ -1,0 +1,108 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rag-pipeline-backup-cron
+  namespace: rag-pipeline # Ensure this matches your application's namespace
+  labels:
+    app.kubernetes.io/name: rag-pipeline-backup-job
+spec:
+  schedule: "0 2 * * *" # Example: Run daily at 2 AM (UTC by default in K8s CronJob)
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: rag-pipeline-backup-sa # Use the dedicated ServiceAccount
+          restartPolicy: OnFailure
+          containers:
+          - name: backup-runner
+            # This should be the same image as your main application if Scripts/run_backup_job.py is part of it,
+            # or a dedicated image built with the script and necessary tools.
+            image: your-registry/rag-pipeline:<VERSION> # Replace with your actual image and tag
+            imagePullPolicy: IfNotPresent
+            command: ["python3.13", "/app/Scripts/run_backup_job.py"] # Assumes python3.13 is in PATH
+            env:
+              # Non-sensitive config file path (mounted from ConfigMap)
+              - name: BACKUP_CONFIG_FILE_PATH
+                value: "/etc/backup-config/backup_job_config.yaml"
+
+              # Sensitive credentials from Secrets
+              - name: DB_URL_FOR_BACKUP
+                valueFrom:
+                  secretKeyRef:
+                    name: rag-pipeline-backup-db-credentials # From backup-secrets.yaml.example
+                    key: DB_URL_FOR_BACKUP
+                    optional: true # Make it optional if DB backup is not always required/configured
+              - name: QDRANT_API_KEY_FOR_BACKUP # Example, if Qdrant needs an API key
+                valueFrom:
+                  secretKeyRef:
+                    name: rag-pipeline-backup-db-credentials # Can be same secret or different
+                    key: QDRANT_API_KEY_FOR_BACKUP
+                    optional: true
+              - name: AWS_ACCESS_KEY_ID_FOR_BACKUP
+                valueFrom:
+                  secretKeyRef:
+                    name: rag-pipeline-backup-s3-credentials # From backup-secrets.yaml.example
+                    key: AWS_ACCESS_KEY_ID_FOR_BACKUP
+                    optional: true # Make optional if S3 is not always used
+              - name: AWS_SECRET_ACCESS_KEY_FOR_BACKUP
+                valueFrom:
+                  secretKeyRef:
+                    name: rag-pipeline-backup-s3-credentials
+                    key: AWS_SECRET_ACCESS_KEY_FOR_BACKUP
+                    optional: true
+
+              # Qdrant URL can be an internal K8s service name
+              - name: QDRANT_URL_FOR_BACKUP
+                value: "http://qdrant-service.rag-pipeline.svc.cluster.local:6333"
+
+            volumeMounts:
+            - name: backup-config-volume
+              mountPath: /etc/backup-config # Mount the ConfigMap here
+            - name: backup-data-volume
+              mountPath: /app/backups_data # Mount a volume for storing backups locally in the pod before upload
+                                          # This should match "backup_dir" in backup_job_config.yaml if that path is relative
+                                          # or if backup_dir in config is /app/backups_data
+            - name: backup-logs-volume
+              mountPath: /app/logs/backup_job_logs # Mount a volume for backup job logs
+                                                 # This should match "log_dir" in backup_job_config.yaml
+
+          volumes:
+          - name: backup-config-volume
+            configMap:
+              name: rag-pipeline-backup-config # Defined in backup-configmap.yaml
+          - name: backup-data-volume # Stores backups temporarily if needed by BackupManager
+            emptyDir: {} # Backups stored here are ephemeral to the job pod's life.
+                         # BackupManager should upload to S3 if persistence beyond job is needed.
+          - name: backup-logs-volume # Stores logs for this job run
+            emptyDir: {} # Logs are ephemeral to the job pod's life. Configure cluster logging to collect them.
+
+# Notes:
+# 1. Image: Ensure `your-registry/rag-pipeline:<VERSION>` contains `Scripts/run_backup_job.py`,
+#    `BackupManager`, all dependencies from `requirements.txt`, and any CLI tools like `pg_dump`.
+# 2. Configuration: `backup_job_config.yaml` (from ConfigMap) and Secrets provide runtime config.
+#    Ensure paths in `backup_job_config.yaml` (like `backup_dir`, `log_dir`) are consistent with
+#    `volumeMounts` in this CronJob pod spec if they are meant to be within mounted volumes.
+#    The `run_backup_job.py` script assumes `backup_dir` and `log_dir` are writable by the pod.
+# 3. Secrets: `rag-pipeline-backup-db-credentials` and `rag-pipeline-backup-s3-credentials`
+#    must be created in the `rag-pipeline` namespace from `backup-secrets.yaml.example`.
+#    Marking them `optional: true` in envFrom makes the job start even if a secret/key is missing,
+#    but `run_backup_job.py` script's logic will fail if a required env var is not present.
+# 4. ServiceAccount: `rag-pipeline-backup-sa` (from `backup-rbac.yaml`) is used.
+# 5. Persistent Volumes for Backup Data/Logs in Pod:
+#    - `backup-data-volume` uses `emptyDir{}`: This means backups created by `BackupManager` inside the pod
+#      are stored on the node's ephemeral storage and are lost when the pod finishes. This is acceptable
+#      IF `BackupManager` successfully uploads them to persistent storage (like S3) during its run.
+#    - `backup-logs-volume` uses `emptyDir{}`: Logs will be written to pod's ephemeral storage.
+#      They should be collected by a cluster-level logging solution (e.g., ELK, Loki).
+#    - If you need the backup data itself to persist on a K8s PV *via the CronJob pod* (e.g., if S3 upload failed
+#      and you want to retrieve files from the last job's pod, or for a staging area), you would
+#      replace `emptyDir: {}` with a `persistentVolumeClaim` definition for these volumes.
+#      However, the primary persistence of backups is intended for S3 via BackupManager.
+# 6. `command`: Uses `python3.13`. Ensure this is the correct Python executable path in the image.
+#    If `python3` is correctly aliased to `python3.13` in the Dockerfile, `python3` could be used here.
+# 7. Schedule: "0 2 * * *" runs daily at 2 AM UTC. Adjust as needed.
+# 8. `imagePullPolicy: IfNotPresent` is good practice for stable versions.
+# 9. Consider `successfulJobsHistoryLimit` and `failedJobsHistoryLimit` in `spec:` for the CronJob
+#    to manage how many completed/failed job pods are retained by Kubernetes. E.g.:
+#    successfulJobsHistoryLimit: 3
+#    failedJobsHistoryLimit: 1

@@ -6,42 +6,32 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=UTF-8
 
-# Install system dependencies, including an attempt for Python 3.13
-# Note: python3.13 might not be available in default ubuntu22.04 repos for nvidia/cuda base.
-# If this step fails, may need to use a PPA, compile from source, or use a newer base / different strategy.
-# For now, trying with python3.13 directly.
+# Install software-properties-common to manage PPAs, and other system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.13 python3.13-pip python3.13-venv \
-    curl git tesseract-ocr poppler-utils \
-    && rm -rf /var/lib/apt/lists/* \
-    || (apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 python3.12-pip python3.12-venv \
-        curl git tesseract-ocr poppler-utils \
-        && rm -rf /var/lib/apt/lists/* \
-        && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
-        && update-alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1) \
-    || (apt-get update && apt-get install -y --no-install-recommends \
-        python3.11 python3.11-pip python3.11-venv \
-        curl git tesseract-ocr poppler-utils \
-        && rm -rf /var/lib/apt/lists/* \
-        && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
-        && update-alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.11 1)
+    software-properties-common \
+    curl \
+    git \
+    tesseract-ocr \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
 
-# Ensure python3 and pip3 point to the installed version if not python3.13
-# This step might need adjustment based on which Python version was successfully installed.
-# If python3.13 was installed, these alternatives might not be strictly necessary if it becomes default.
-# Assuming one of the python3.11, 3.12 or 3.13 installs succeeded and became 'python3'
-# RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1 || \
-#     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 || \
-#     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
-# RUN update-alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.13 1 || \
-#     update-alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.12 1 || \
-#     update-alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.11 1
-# The above alternative setup is complex and error-prone. A simpler way if a specific version is needed
-# and installed (e.g. python3.11 becomes the fallback) is to use `python3.11 -m pip ...` directly.
-# For now, the OR chain for installation attempts to get the highest version.
+# Add deadsnakes PPA for newer Python versions
+RUN add-apt-repository ppa:deadsnakes/ppa -y
 
-# Install Ollama (better to do this before copying app code if it doesn't depend on it)
+# Install Python 3.13 and related packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.13 \
+    python3.13-pip \
+    python3.13-venv \
+    python3.13-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Update alternatives to make python3.13 the default python3 and pip3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1 \
+    && update-alternatives --install /usr/bin/pip3 pip3 /usr/local/bin/pip3.13 1
+    # Note: pip from deadsnakes PPA might install to /usr/local/bin for the specific version
+
+# Install Ollama (can be done before or after Python setup, as long as curl is available)
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
 WORKDIR /app
@@ -49,9 +39,8 @@ WORKDIR /app
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Install Python dependencies using the available python3
-# This will use whatever 'python3' points to after apt-get and alternatives.
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies using python3.13 explicitly to be sure
+RUN python3.13 -m pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .

@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-pipeline-backup-config
+  namespace: rag-pipeline # Ensure this matches your application's namespace
+data:
+  backup_job_config.yaml: |
+    # Directory within the backup pod where backups are temporarily stored before potential upload
+    backup_dir: "/backups" # This path will be inside the backup CronJob pod
+
+    # Directory within the backup pod for backup job logs
+    log_dir: "/var/log/backup_job"
+
+    # --- Qdrant Configuration ---
+    # QDRANT_URL_FOR_BACKUP should be provided via environment variable (from Secret or direct value)
+    # Example: "http://qdrant-service.rag-pipeline.svc.cluster.local:6333"
+    # QDRANT_API_KEY_FOR_BACKUP (if any) should be provided via environment variable (from Secret)
+
+    # --- PostgreSQL Database Configuration (if used by BackupManager) ---
+    # DB_URL_FOR_BACKUP should be provided via environment variable (from Secret)
+    # Example: "postgresql://user:password@your-db-host:5432/your-db-name"
+
+    # --- File Backup Configuration ---
+    # Paths to directories that BackupManager should archive.
+    # These paths must be accessible within the backup pod. If these are on PVs
+    # used by the main application, those PVs would need to be mounted (read-only if possible)
+    # to the backup pod. This example assumes these paths are set up or data is made
+    # available to the backup pod through some mechanism if they are not part of the image.
+    # For simplicity, these might often be empty or not used if DBs are the primary backup targets.
+    document_storage_path: "/mnt/persistent_storage/documents" # Example path on a mounted PV
+    metadata_storage_path: "/mnt/persistent_storage/metadata"  # Example path on a mounted PV
+
+    # --- S3 Backup Configuration ---
+    use_s3: true # Set to false if not using S3
+
+    # S3 Bucket Name - REQUIRED if use_s3 is true
+    # This can be set here or overridden by an environment variable S3_BUCKET_NAME_FOR_BACKUP
+    s3_bucket_name: "your-s3-backup-bucket-name-here"
+
+    # AWS Region for S3 - Optional, defaults to 'us-east-1' in BackupManager if not set
+    # Can be overridden by an environment variable AWS_REGION_FOR_BACKUP
+    aws_region: "us-west-2"
+
+    # AWS_ACCESS_KEY_ID_FOR_BACKUP and AWS_SECRET_ACCESS_KEY_FOR_BACKUP
+    # MUST be provided as environment variables (from Kubernetes Secrets) if use_s3 is true.
+
+    # --- Backup Retention ---
+    # Number of days to keep local backups (within the backup_dir in the pod, if not uploaded and deleted)
+    # Note: S3 retention needs to be managed by S3 lifecycle policies.
+    backup_retention_days: 7
+---

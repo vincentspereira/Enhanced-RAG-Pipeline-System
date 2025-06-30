@@ -4,6 +4,12 @@ import os
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
+# Assuming ModelConfig is accessible for type hinting, or use a more generic dict/config object
+# from ..config.manager import ModelConfig # This creates a circular dependency if service.py is imported by config.manager indirectly.
+# For now, let's assume config is passed as a dict or a compatible object.
+from .openai_llm import OpenAILLM # Assuming this was the intended OpenAI client
+from .ollama_llm import OllamaLLM # Import the new OllamaLLM
+
 class LLMService(ABC):
     """Abstract base class for LLM services."""
     
@@ -70,3 +76,58 @@ class LLMRegistry:
 
 # Create global registry instance
 llm_registry = LLMRegistry()
+
+# Factory function to create LLM service based on configuration
+def create_llm_service_from_config(config: Any) -> LLMService: # Use Any for config type to avoid circular import for now
+    """
+    Creates an LLM service instance based on the provided configuration.
+
+    Args:
+        config: A configuration object compatible with ModelConfig structure,
+                containing llm_service name and specific settings.
+                Expected attributes:
+                - llm_service (str): 'openai', 'huggingface', 'ollama', etc.
+                - llm_model (str): Name of the model for HuggingFace.
+                - openai_api_key (str, optional): For OpenAI.
+                - openai_model_name (str, optional): For OpenAI.
+                - ollama_api_url (str, optional): For Ollama.
+                - ollama_completion_model (str, optional): For Ollama.
+                - ollama_request_timeout (int, optional): For Ollama.
+                (and other specific configs for each service)
+
+    Returns:
+        LLMService: An instance of the configured LLM service.
+
+    Raises:
+        ValueError: If the configured llm_service is unknown.
+    """
+    service_name = getattr(config, 'llm_service', 'huggingface').lower()
+
+    if service_name == "huggingface":
+        hf_model_name = getattr(config, 'llm_model', "gpt2") # Default to gpt2 if not specified
+        # Note: HuggingFaceLLM might need more config like device, max_length etc. from ModelConfig
+        # For now, it only takes model_name. This might need to be expanded.
+        return HuggingFaceLLM(model_name=hf_model_name)
+    elif service_name == "openai":
+        api_key = getattr(config, 'openai_api_key', os.getenv("OPENAI_API_KEY"))
+        model_name = getattr(config, 'openai_model_name', "gpt-3.5-turbo")
+        # Add other OpenAI specific params from config if OpenAILLM supports them
+        # e.g., temperature, max_tokens from llm_config or ModelConfig itself
+        return OpenAILLM(api_key=api_key, model_name=model_name)
+    elif service_name == "ollama":
+        api_url = getattr(config, 'ollama_api_url', "http://localhost:11434")
+        completion_model = getattr(config, 'ollama_completion_model', "llama2")
+        # embedding_model is not directly used by LLMService for text generation
+        # embedding_model = getattr(config, 'ollama_embedding_model', None)
+        timeout = getattr(config, 'ollama_request_timeout', 120)
+        return OllamaLLM(
+            host=api_url,
+            completion_model_name=completion_model,
+            # embedding_model_name=embedding_model, # OllamaLLM handles this internally for its own embedding method
+            request_timeout=float(timeout)
+        )
+    # Add other services here as elif blocks
+    # elif service_name == "anthropic":
+    #     return AnthropicLLM(...)
+    else:
+        raise ValueError(f"Unknown LLM service configured: {service_name}")

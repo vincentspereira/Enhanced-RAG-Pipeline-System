@@ -43,6 +43,16 @@ from tqdm import tqdm
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import for RabbitMQ
+try:
+    from .utils.message_queue import RabbitMQConnection
+    import pika # For BasicProperties if needed explicitly
+except ImportError:
+    logger.warning("RabbitMQ utils not found, message queue publishing will be disabled in RAGPipeline.")
+    RabbitMQConnection = None
+    pika = None
+
+
 @dataclass
 class SearchConfig:
     """Configuration for hybrid search capabilities"""
@@ -236,19 +246,78 @@ class RAGPipeline:
             logger.info(f"Created new collection: {self.collection_name}")
 
     def process_documents(self, input_dir: Union[str, Path], batch_size: int = 32) -> None:
-        """Process documents from a directory and store them in Qdrant."""
+        """
+        Process documents from a directory.
+        If RabbitMQ is configured, it publishes document paths to a queue.
+        Otherwise, it processes them directly and stores them in Qdrant.
+        """
         input_dir = Path(input_dir)
-        
-        # Process documents and get chunks
-        logger.info("Processing documents...")
+        logger.info(f"Starting document processing for directory: {input_dir}")
+
+        # Check if RabbitMQ is configured and available for publishing
+        if RabbitMQConnection and self.app_config.rabbitmq and self.app_config.rabbitmq.host:
+            logger.info("RabbitMQ is configured. Attempting to publish document paths to queue.")
+            published_count = 0
+            try:
+                with RabbitMQConnection(
+                    host=self.app_config.rabbitmq.host,
+                    port=self.app_config.rabbitmq.port,
+                    username=self.app_config.rabbitmq.username, # Should be from secrets in prod
+                    password=self.app_config.rabbitmq.password, # Should be from secrets in prod
+                    virtual_host=self.app_config.rabbitmq.virtual_host
+                ) as mq_conn:
+                    queue_name = self.app_config.rabbitmq.default_document_queue
+                    mq_conn.declare_queue(queue_name, durable=True)
+
+                    # Iterate through files in the input directory
+                    # For simplicity, let's assume doc_processor has a method to list files,
+                    # or we list them here. For this example, let's say we iterate over files.
+                    # This part would ideally use the same file discovery logic as doc_processor.process_directory
+                    # to avoid discrepancies.
+                    # For now, a simple glob for demonstration.
+
+                    # doc_processor.get_supported_files(input_dir) might be better if it exists
+                    files_to_process = [f for f in input_dir.rglob('*') if f.is_file()]
+
+                    for file_path in files_to_process:
+                        try:
+                            message_body = json.dumps({
+                                "document_path": str(file_path),
+                                "source_directory": str(input_dir),
+                                "requested_at": datetime.utcnow().isoformat()
+                            })
+                            mq_conn.publish_message(queue_name=queue_name, message_body=message_body)
+                            logger.info(f"Published document path '{file_path}' to queue '{queue_name}'.")
+                            published_count += 1
+                        except Exception as pub_err:
+                            logger.error(f"Failed to publish document path '{file_path}' to queue: {pub_err}")
+
+                logger.info(f"Finished publishing {published_count} document paths to RabbitMQ.")
+                # In a full MQ workflow, this method might end here,
+                # and the actual processing (chunking, embedding, storing) would happen in a worker.
+                # For this phase, we'll just log that it was published.
+                # The original direct processing logic below is kept for now as a fallback or alternative path.
+                # If the goal is ONLY MQ, then the rest of this function would be removed or conditional.
+                if published_count > 0:
+                     logger.info("Document paths published to queue. Further processing will be handled by workers.")
+                     # return # Optionally return here if MQ is the sole path when enabled.
+
+            except Exception as mq_e:
+                logger.error(f"Failed to connect or publish to RabbitMQ: {mq_e}. Falling back to direct processing if implemented.")
+                # Fall through to direct processing if MQ fails and direct processing is still desired as fallback
+
+        # --- Original Direct Processing Logic ---
+        # This part will run if RabbitMQ is not configured, or if publishing failed and we want a fallback,
+        # or if we want to demonstrate both publishing AND direct processing for now.
+        logger.info("Proceeding with direct document processing...")
         chunks = self.doc_processor.process_directory(input_dir)
         
         if not chunks:
-            logger.warning("No documents were processed.")
+            logger.warning("No documents were processed directly.")
             return
 
         # Generate embeddings with GPU acceleration
-        logger.info("Generating embeddings...")
+        logger.info("Generating embeddings for direct processing...")
         processed_chunks = self.embedding_generator.process_chunks(chunks, batch_size=batch_size)
         
         # Prepare points for Qdrant

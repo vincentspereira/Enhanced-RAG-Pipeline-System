@@ -61,6 +61,15 @@ from embedding_generator import EmbeddingGenerator as ActualEmbeddingGenerator
 # Import AuthManager and related items
 from auth.auth_manager import AuthManager, AuthConfig as AppAuthConfig, User as AuthUser, Permission
 
+# Import Notification Service
+from notification_service import initialize_notification_service, get_notification_service, Notifier
+
+# Import Audit Logger
+from security.audit_logger import AuditLogger, AuditEvent
+
+# Import QueryCache
+from caching.query_cache import QueryCache, CacheConfig as QueryCacheModuleConfig
+
 
 # Load environment variables
 load_dotenv()
@@ -209,6 +218,71 @@ async def startup_event_main():
     else:
         app.state.integration_manager_instance = None
         logger.info("Enhancement systems disabled by feature flags.")
+
+    # Initialize Notification Service
+    try:
+        initialize_notification_service(app_config) # app_config is SystemConfig which now includes NotificationConfig
+        app.state.notification_service = get_notification_service() # Store instance if needed by other parts via app.state
+        logger.info("Notification service initialized.")
+        if app.state.notification_service:
+            await app.state.notification_service.send_notification(
+                subject=f"{app.title} Startup",
+                message=f"{app.title} v{app.version} has started successfully.",
+                metadata={"startup_time": app.state.start_time}
+            )
+    except Exception as e:
+        logger.error(f"Failed to initialize or use notification service during startup: {e}")
+        app.state.notification_service = None # Ensure it's None if init failed
+
+    # Initialize Audit Logger
+    try:
+        # Assuming app_config.audit is AuditLoggerConfig from config.manager
+        audit_logger_config_dict = {
+            "log_dir": str(app_config.audit.log_dir), # Convert Path if it's Path object
+            "use_elasticsearch": app_config.audit.use_elasticsearch,
+            "elasticsearch_url": app_config.audit.elasticsearch_url
+            # elasticsearch_index_prefix is handled by AuditLogger default if not in dict
+        }
+        audit_logger_instance = AuditLogger(config=audit_logger_config_dict)
+        app.state.audit_logger = audit_logger_instance
+        logger.info("AuditLogger initialized.")
+        # Log successful startup
+        app.state.audit_logger.log_event(AuditEvent(
+            event_type="system_startup",
+            user_id="system",
+            action="Application Started",
+            resource_type="application",
+            resource_id=app.title,
+            status="success",
+            metadata={"version": app.version}
+        ))
+    except Exception as e:
+        logger.error(f"Failed to initialize AuditLogger: {e}", exc_info=True)
+        app.state.audit_logger = None
+
+    # Initialize QueryCache
+    try:
+        qc_settings = app_config.query_cache # This is QueryCacheSettings from config.manager
+        query_cache_module_config = QueryCacheModuleConfig(
+            cache_type=qc_settings.cache_type,
+            redis_url=qc_settings.redis_url,
+            disk_cache_dir=str(app_config.paths.cache_dir / "query_cache_disk"), # Ensure path is string
+            default_ttl=qc_settings.default_ttl
+            # Add other mappings from QueryCacheSettings to QueryCacheModuleConfig if they expand
+        )
+        query_cache_instance = QueryCache(config=query_cache_module_config)
+        app.state.query_cache = query_cache_instance
+        logger.info(f"QueryCache initialized with type: {query_cache_module_config.cache_type}")
+        # Example: Test query cache with a dummy operation
+        # await app.state.query_cache.cache_result("startup_test_key", {"status": "ok"})
+        # cached_val = await app.state.query_cache.get_cached_result("startup_test_key")
+        # logger.info(f"QueryCache test: {cached_val}")
+
+    except Exception as e:
+        logger.error(f"Failed to initialize QueryCache: {e}", exc_info=True)
+        app.state.query_cache = None
+
+
     logger.info(f"{app.title} startup complete.")
 
 @app.on_event("shutdown")
@@ -327,11 +401,32 @@ async def get_system_status_rag_endpoint(
     current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.API_READ)
 ):
     rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+    query_cache: Optional[QueryCache] = fastapi_req.app.state.query_cache
+    cache_key_prefix = "system_status_rag" # For QueryCache's _generate_key which takes a query string
+
     if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
+
+    if query_cache:
+        # For a parameterless endpoint, the "query" part of the key can be static.
+        # Params can be None or an empty dict.
+        cached_data = await query_cache.get_cached_result(query=cache_key_prefix, params={})
+        if cached_data:
+            logger.info(f"Returning cached data for {cache_key_prefix}")
+            return cached_data
+
     try:
-        loop = asyncio.get_event_loop(); collection_info = await loop.run_in_executor(None, rag_pipeline.get_collection_info)
+        loop = asyncio.get_event_loop()
+        collection_info = await loop.run_in_executor(None, rag_pipeline.get_collection_info)
+
+        if query_cache:
+            # Cache the result. TTL can be from QueryCache's default_ttl or specified here.
+            await query_cache.cache_result(query=cache_key_prefix, params={}, result=collection_info)
+            logger.info(f"Cached data for {cache_key_prefix}")
+
         return collection_info
-    except Exception as e: logger.error(f"RAG System status error: {str(e)}"); raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"RAG System status error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate_response", tags=["RAG Core"])
 async def generate_response_endpoint(
@@ -406,11 +501,39 @@ async def consolidated_stream_chat_with_copilot(
 async def login_for_access_token(
     fastapi_req: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
-    auth_manager: AuthManager = Depends(get_auth_manager) # Use dependency injection
+    auth_manager: AuthManager = Depends(get_auth_manager)
 ):
-    user = await auth_manager.authenticate_user(form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(status_code=fastapi_status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password", headers={"WWW-Authenticate": "Bearer"})
+    audit_logger: Optional[AuditLogger] = fastapi_req.app.state.audit_logger
+    ip_address = fastapi_req.client.host if fastapi_req.client else "N/A"
+
+    try:
+        user = await auth_manager.authenticate_user(
+            username=form_data.username,
+            password=form_data.password,
+            audit_logger=audit_logger, # Pass logger
+            ip_address=ip_address      # Pass IP
+        )
+    except HTTPException as e: # Catch auth-specific HTTPExceptions to ensure they are re-raised
+        # Audit log for failure is already handled inside authenticate_user/_record_failed_attempt
+        raise e
+    except Exception as e: # Catch other unexpected errors during auth
+        if audit_logger:
+            audit_logger.log_event(AuditEvent(
+                event_type="user_login_error", user_id=form_data.username, action="User Login Error",
+                resource_type="user_session", resource_id=form_data.username, status="failure",
+                ip_address=ip_address, metadata={"error": str(e)}
+            ))
+        raise HTTPException(status_code=fastapi_status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error during authentication.")
+
+
+    if not user: # Should be handled by exceptions from authenticate_user, but as a safeguard
+        # This path is less likely if authenticate_user raises HTTPException on failure
+        raise HTTPException(
+            status_code=fastapi_status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
     access_token = auth_manager.create_access_token(user=user)
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -431,8 +554,15 @@ async def update_admin_config_endpoint( # Renamed
     current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.ADMIN_WRITE) # Protect with permission
 ):
     config_manager_instance: ConfigManager = fastapi_req.app.state.config_manager
+    audit_logger: Optional[AuditLogger] = fastapi_req.app.state.audit_logger
+
     try:
         update_dict = config_update.dict(exclude_unset=True)
+        # For audit, log what is being attempted to change, avoid logging sensitive values if any in full config
+        # A summary of changed keys might be better than logging the full update_dict if it can contain secrets.
+        # For now, logging the keys that are being updated.
+        changed_sections = list(update_dict.keys())
+
         current_config: AppSystemConfig = config_manager_instance.config
         for section_name, section_updates in update_dict.items():
             if hasattr(current_config, section_name) and isinstance(section_updates, dict):
@@ -442,11 +572,78 @@ async def update_admin_config_endpoint( # Renamed
             elif hasattr(current_config, section_name): setattr(current_config, section_name, section_updates)
         config_manager_instance.save_config()
         app.state.app_config = config_manager_instance.config
-        logger.info(f"System configuration updated with: {update_dict}")
+        logger.info(f"System configuration updated by user {current_user.username} with changes to sections: {changed_sections}")
+
+        if audit_logger:
+            audit_logger.log_event(AuditEvent(
+                event_type="config_update",
+                user_id=current_user.id,
+                action="Admin Configuration Updated",
+                resource_type="system_configuration",
+                resource_id="app_config",
+                status="success",
+                ip_address=fastapi_req.client.host if fastapi_req.client else "N/A",
+                metadata={"updated_sections": changed_sections}
+            ))
         return app.state.app_config
     except Exception as e:
-        logger.error(f"Failed to update configuration: {e}")
+        logger.error(f"Failed to update configuration by user {current_user.username}: {e}", exc_info=True)
+        if audit_logger:
+            audit_logger.log_event(AuditEvent(
+                event_type="config_update_failed",
+                user_id=current_user.id,
+                action="Admin Configuration Update Failed",
+                resource_type="system_configuration",
+                resource_id="app_config",
+                status="failure",
+                ip_address=fastapi_req.client.host if fastapi_req.client else "N/A",
+                metadata={"error": str(e), "attempted_updates_to_sections": changed_sections}
+            ))
         raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
+
+# --- Adding Audit Log to /process_docs ---
+@app.post("/process_docs", tags=["RAG Core"])
+async def process_documents_endpoint(
+    payload: ProcessRequestInput,
+    background_tasks: BackgroundTasks,
+    fastapi_req: Request, # fastapi_req must be before current_user if current_user depends on it implicitly via get_auth_manager
+    current_user: AuthUser = Depends(get_auth_manager).require_permission(Permission.DOCUMENT_WRITE)
+):
+    rag_pipeline: RAGPipeline = fastapi_req.app.state.rag_pipeline
+    audit_logger: Optional[AuditLogger] = fastapi_req.app.state.audit_logger
+
+    if not rag_pipeline: raise HTTPException(status_code=503, detail="RAG Pipeline not initialized")
+
+    path = Path(payload.directory_path)
+    if not path.exists() or not path.is_dir():
+        if audit_logger:
+            audit_logger.log_event(AuditEvent(
+                event_type="document_processing_trigger_failed",
+                user_id=current_user.id,
+                action="Document Processing Triggered - Path Not Found",
+                resource_type="directory",
+                resource_id=str(path),
+                status="failure",
+                ip_address=fastapi_req.client.host if fastapi_req.client else "N/A",
+                metadata={"directory_path": payload.directory_path, "error": "Path not found or not a directory"}
+            ))
+        raise HTTPException(status_code=404, detail=f"Directory not found: {path}")
+
+    background_tasks.add_task(rag_pipeline.process_documents, path, payload.batch_size)
+
+    if audit_logger:
+        audit_logger.log_event(AuditEvent(
+            event_type="document_processing_triggered",
+            user_id=current_user.id,
+            action="Document Processing Triggered",
+            resource_type="directory",
+            resource_id=str(path),
+            status="success", # Indicates triggering was successful, not completion of processing
+            ip_address=fastapi_req.client.host if fastapi_req.client else "N/A",
+            metadata={"directory_path": payload.directory_path, "batch_size": payload.batch_size}
+        ))
+
+    return {"message": f"Started processing documents from {path}"}
 
 
 # --- Original Endpoints from enhanced_api.py (Health, Status, Search_Direct_Qdrant, Admin) ---

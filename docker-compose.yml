@@ -47,6 +47,30 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s # Give the API time to start, especially if models are loaded
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      rabbitmq: # Added dependency on RabbitMQ
+        condition: service_healthy
+
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"  # AMQP port
+      - "15672:15672" # Management UI port
+    volumes:
+      - rabbitmq_data_vol:/var/lib/rabbitmq/
+    environment:
+      RABBITMQ_DEFAULT_USER: "raguser"      # Replace with desired user
+      RABBITMQ_DEFAULT_PASS: "ragpassword"  # Replace with desired password (use secrets in production)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
 volumes:
   qdrant_storage_vol: {} # Define the named volume for Qdrant
+  rabbitmq_data_vol: {}  # Define the named volume for RabbitMQ data

@@ -16,8 +16,17 @@ import schedule
 import time
 import threading
 
+# Attempt to import the notification service components
+try:
+    from ..notification_service import get_notification_service, Notifier
+except ImportError: # Handle cases where this script might be run standalone or notification_service is not in PYTHONPATH
+    print("Warning: Notification service could not be imported by BackupManager. Notifications will be skipped.")
+    Notifier = None # type: ignore
+    get_notification_service = lambda: None # type: ignore
+
+
 class BackupManager:
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], notifier: Optional[Notifier] = None):
         self.config = config
         self.backup_dir = Path(config.get('backup_dir', 'backups'))
         self.backup_dir.mkdir(parents=True, exist_ok=True)
@@ -25,6 +34,9 @@ class BackupManager:
         
         # Initialize storage client (if configured)
         self.s3_client = self._init_s3_client() if config.get('use_s3') else None
+        self.notifier = notifier if notifier else get_notification_service()
+        if not self.notifier and Notifier is not None : # Check Notifier to avoid error if import failed
+            self.logger.warning("Notifier instance not provided and could not be fetched globally. Backup notifications will be skipped.")
         
     def _setup_logging(self):
         self.logger = logging.getLogger("backup_manager")
@@ -211,11 +223,25 @@ class BackupManager:
                 max_age_days=self.config.get('backup_retention_days', 30)
             )
             
-            self.logger.info(f"Backup completed successfully: {timestamp}")
+            success_message = f"Backup completed successfully: {timestamp}. Manifest: {json.dumps(manifest)}"
+            self.logger.info(success_message)
+            if self.notifier:
+                await self.notifier.send_notification(
+                    subject="RAG System Backup Success",
+                    message=success_message,
+                    metadata={"backup_timestamp": timestamp, "manifest_file": str(manifest_file)}
+                )
             return manifest
             
         except Exception as e:
-            self.logger.error(f"Backup failed: {str(e)}")
+            error_message = f"Backup failed for timestamp {timestamp}: {str(e)}"
+            self.logger.error(error_message, exc_info=True) # Log with stack trace
+            if self.notifier:
+                await self.notifier.send_notification(
+                    subject="RAG System Backup FAILED",
+                    message=error_message,
+                    metadata={"backup_timestamp": timestamp, "error": str(e)}
+                )
             raise
 
     def schedule_backups(self, schedule_config: Dict[str, Any]):

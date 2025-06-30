@@ -14,6 +14,14 @@ import asyncio
 import redis.asyncio as redis
 from contextlib import asynccontextmanager
 
+# Import AuditLogger components for type hinting and use
+try:
+    from ..security.audit_logger import AuditLogger, AuditEvent # Relative import if audit_logger is in security
+except ImportError:
+    # Fallback for potential standalone use or different structure, though less ideal
+    AuditLogger = None
+    AuditEvent = None
+
 logger = logging.getLogger(__name__)
 
 class Permission(str, Enum):
@@ -116,7 +124,10 @@ class AuthManager:
         username: str,
         email: str,
         password: str,
-        roles: List[Role]
+        roles: List[Role],
+        audit_logger: Optional[AuditLogger] = None, # Added
+        ip_address: Optional[str] = None, # Added
+        performed_by_user_id: Optional[str] = "system" # ID of user performing creation, system if self-signup/admin
     ) -> User:
         """Create a new user"""
         if len(password) < self.config.password_min_length:
@@ -149,12 +160,25 @@ class AuthManager:
             user.json()
         )
 
+        if audit_logger and AuditEvent:
+            audit_logger.log_event(AuditEvent(
+                event_type="user_creation",
+                user_id=performed_by_user_id, # User performing the action
+                action="User Created",
+                resource_type="user",
+                resource_id=user.id, # ID of the created user
+                status="success",
+                ip_address=ip_address,
+                metadata={"username": user.username, "roles": [r.value for r in user.roles]}
+            ))
         return user
 
     async def authenticate_user(
         self,
         username: str,
-        password: str
+        password: str,
+        audit_logger: Optional[AuditLogger] = None, # Added
+        ip_address: Optional[str] = None # Added
     ) -> Optional[User]:
         """Authenticate a user with username and password"""
         # Check failed attempts
@@ -203,10 +227,33 @@ class AuthManager:
         # Clear failed attempts
         await self.redis.delete(failed_key)
 
+        if audit_logger and AuditEvent:
+            audit_logger.log_event(AuditEvent(
+                event_type="user_login_success",
+                user_id=user.id, # The user who logged in
+                action="User Login",
+                resource_type="user_session",
+                resource_id=user.id, # Could be a session ID if generated here
+                status="success",
+                ip_address=ip_address,
+                metadata={"username": username}
+            ))
         return user
 
-    async def _record_failed_attempt(self, username: str):
-        """Record a failed login attempt"""
+    async def _record_failed_attempt(self, username: str, audit_logger: Optional[AuditLogger] = None, ip_address: Optional[str] = None):
+        """Record a failed login attempt and log audit event."""
+        if audit_logger and AuditEvent:
+            audit_logger.log_event(AuditEvent(
+                event_type="user_login_failure",
+                user_id=username, # Attempted username
+                action="User Login Attempt Failed",
+                resource_type="user_session",
+                resource_id=username,
+                status="failure",
+                ip_address=ip_address,
+                metadata={"username": username, "reason": "Invalid credentials or inactive user"}
+            ))
+
         key = f"auth:failed:{username}"
         await self.redis.incr(key)
         await self.redis.expire(
@@ -216,13 +263,16 @@ class AuthManager:
 
     async def create_api_key(
         self,
-        user_id: str,
+        user_id: str, # The user for whom the key is created
         name: str,
         permissions: Optional[Set[Permission]] = None,
-        expires_in_days: Optional[int] = None
+        expires_in_days: Optional[int] = None,
+        audit_logger: Optional[AuditLogger] = None, # Added
+        ip_address: Optional[str] = None, # Added - IP of the requester
+        performed_by_user_id: Optional[str] = None # User ID of who is performing this action
     ) -> APIKey:
         """Create a new API key for a user"""
-        # Get user
+        # Get user for whom the key is being created
         user_data = await self.redis.hget("users", user_id)
         if not user_data:
             raise ValueError(f"User {user_id} not found")
@@ -256,6 +306,24 @@ class AuthManager:
             api_key.json()
         )
 
+        if audit_logger and AuditEvent:
+            # If performed_by_user_id is not provided, it implies the user_id themselves created it, or system default
+            actor_id = performed_by_user_id if performed_by_user_id else user_id
+            audit_logger.log_event(AuditEvent(
+                event_type="api_key_creation",
+                user_id=actor_id,
+                action="API Key Created",
+                resource_type="api_key",
+                resource_id=api_key.key, # Or a hash of it if key is too sensitive for direct logging
+                status="success",
+                ip_address=ip_address,
+                metadata={
+                    "target_user_id": user_id,
+                    "key_name": name,
+                    "permissions_granted": [p.value for p in permissions] if permissions else "user_default",
+                    "expires_days": expires_in_days if expires_in_days else "never"
+                }
+            ))
         return api_key
 
     async def validate_api_key(self, api_key: str) -> Optional[APIKey]:

@@ -14,6 +14,11 @@ class ModelConfig:
     device: str = "cuda"  # or "cpu"
     batch_size: int = 32 # Original default, also in Scripts/config.py
     max_length: int = 512
+    # Ollama specific configurations
+    ollama_api_url: Optional[str] = "http://localhost:11434" # Base URL for Ollama API
+    ollama_completion_model: Optional[str] = "llama2" # Default completion model
+    ollama_embedding_model: Optional[str] = None # Specific model for embeddings via Ollama, if different
+    ollama_request_timeout: int = 120 # Timeout in seconds for Ollama requests
 
 @dataclass
 class VectorStoreConfig:
@@ -44,11 +49,16 @@ class PathsConfig:
     workflow_config_path: Path = Path("workflows")
     model_cache_path: Path = Path("model_cache") # from Scripts/config.py, distinct from cache_dir
     knowledge_graph_path: Path = Path("knowledge_graph")
-    cache_dir: str = "cache" # Original from manager.py for general caching
+    cache_dir: str = "cache" # Original from manager.py for general disk caching (e.g. for QueryCache disk type)
 
 @dataclass
-class CacheSettingsConfig: # Renamed to avoid conflict with PathsConfig.cache_dir
-    ttl: int = 3600
+class QueryCacheSettings: # Replaces old CacheSettingsConfig, maps to query_cache.CacheConfig
+    cache_type: str = "memory"  # "memory", "redis", or "disk"
+    redis_url: Optional[str] = "redis://localhost:6379/0" # Default Redis URL if redis type is used
+    # disk_cache_dir will use paths.cache_dir by default if disk type is used
+    default_ttl: int = 3600  # 1 hour
+    # max_memory_size, compression, etc. can be added if needed from query_cache.CacheConfig
+    # For now, keeping it to essential configurable parts. QueryCache will use its own defaults for others.
 
 @dataclass
 class FeatureFlagsConfig:
@@ -60,15 +70,44 @@ class FeatureFlagsConfig:
     enable_custom_embeddings: bool = False # from Scripts/config.py
 
 @dataclass
+class NotificationConfig:
+    notifier_type: str = "logging"  # e.g., "logging", "email", "slack"
+    log_level: str = "INFO" # For LoggingNotifier
+    # Add other notifier-specific configs here, e.g.:
+    # email_host: Optional[str] = None
+    # email_port: Optional[int] = None
+    # slack_webhook_url: Optional[str] = None
+
+@dataclass
+class AuditLoggerConfig:
+    log_dir: str = "logs/audit" # Default log directory for audit file logs
+    use_elasticsearch: bool = False
+    elasticsearch_url: Optional[str] = "http://localhost:9200" # Default ES URL for audit logs
+    elasticsearch_index_prefix: str = "rag_audit"
+
+@dataclass
+class RabbitMQConfig:
+    host: str = "localhost"
+    port: int = 5672
+    username: Optional[str] = "raguser" # Default from docker-compose, should be from secret in prod
+    password: Optional[str] = "ragpassword" # Default from docker-compose, should be from secret in prod
+    virtual_host: str = "/"
+    default_document_queue: str = "document_processing_queue"
+    # Add other params like prefetch_count, connection_attempts, retry_delay if needed
+
+@dataclass
 class SystemConfig:
     model: ModelConfig
     vector_store: VectorStoreConfig
     processing: ProcessingConfig
     api: APIConfig
     paths: PathsConfig
-    cache_settings: CacheSettingsConfig
+    query_cache: QueryCacheSettings
     feature_flags: FeatureFlagsConfig
-    elasticsearch: 'ElasticsearchConfig' # Forward declaration for type hint
+    elasticsearch: 'ElasticsearchConfig'
+    notification: NotificationConfig
+    audit: AuditLoggerConfig
+    rabbitmq: RabbitMQConfig # Added RabbitMQConfig
 
 
 @dataclass
@@ -114,8 +153,12 @@ class ConfigManager:
             processing=ProcessingConfig(**config_dict.get('processing', {})),
             api=APIConfig(**config_dict.get('api', {})),
             paths=PathsConfig(**config_dict.get('paths', {})),
-            cache_settings=CacheSettingsConfig(**config_dict.get('cache_settings', {})),
-            feature_flags=FeatureFlagsConfig(**config_dict.get('feature_flags', {}))
+            query_cache=QueryCacheSettings(**config_dict.get('query_cache', {})), # Updated
+            feature_flags=FeatureFlagsConfig(**config_dict.get('feature_flags', {})),
+            elasticsearch=ElasticsearchConfig(**config_dict.get('elasticsearch', {})),
+            notification=NotificationConfig(**config_dict.get('notification', {})),
+            audit=AuditLoggerConfig(**config_dict.get('audit', {})),
+            rabbitmq=RabbitMQConfig(**config_dict.get('rabbitmq', {})) # Added rabbitmq
         )
     
     def save_config(self):
@@ -130,9 +173,13 @@ class ConfigManager:
             'vector_store': self.config.vector_store.__dict__,
             'processing': self.config.processing.__dict__,
             'api': self.config.api.__dict__,
-            'paths': {k: str(v) if isinstance(v, Path) else v for k, v in self.config.paths.__dict__.items()}, # Convert Path to str
-            'cache_settings': self.config.cache_settings.__dict__,
-            'feature_flags': self.config.feature_flags.__dict__
+            'paths': {k: str(v) if isinstance(v, Path) else v for k, v in self.config.paths.__dict__.items()},
+            'query_cache': self.config.query_cache.__dict__, # Updated
+            'feature_flags': self.config.feature_flags.__dict__,
+            'elasticsearch': self.config.elasticsearch.__dict__,
+            'notification': self.config.notification.__dict__,
+            'audit': self.config.audit.__dict__,
+            'rabbitmq': self.config.rabbitmq.__dict__ # Added rabbitmq
         }
         
         with open(self.config_path, 'w') as f:

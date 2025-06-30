@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-service
+  namespace: rag-pipeline # Assuming same namespace as other components
+  labels:
+    app: rabbitmq
+spec:
+  ports:
+  - name: amqp
+    port: 5672
+    targetPort: 5672
+  - name: management
+    port: 15672
+    targetPort: 15672
+  selector:
+    app: rabbitmq
+  type: ClusterIP # Expose internally within the cluster
+
+---
+apiVersion: apps/v1
+kind: Deployment # Using Deployment for simpler setup; StatefulSet is better for production RabbitMQ clusters
+metadata:
+  name: rabbitmq
+  namespace: rag-pipeline
+  labels:
+    app: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      # securityContext: # Consider PodSecurityContext if needed (e.g., fsGroup for PV)
+      #   fsGroup: 999 # RabbitMQ user/group ID from its Docker image
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:3-management-alpine
+        ports:
+        - name: amqp
+          containerPort: 5672
+        - name: management
+          containerPort: 15672
+        env:
+        # It's STRONGLY recommended to use Kubernetes Secrets for credentials in production.
+        # This is a simplified example.
+        - name: RABBITMQ_DEFAULT_USER
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials # This Secret needs to be created
+              key: RABBITMQ_USER
+              optional: false # Fail if secret or key is missing
+        - name: RABBITMQ_DEFAULT_PASS
+          valueFrom:
+            secretKeyRef:
+              name: rabbitmq-credentials
+              key: RABBITMQ_PASS
+              optional: false
+        # For persistent storage with a Deployment, a PVC needs to be pre-created and referenced.
+        # Or, use a StatefulSet for easier volume management per replica.
+        # For this basic setup, if persistence is desired, a PVC named 'rabbitmq-data-pvc' could be used.
+        volumeMounts:
+        - name: rabbitmq-data
+          mountPath: /var/lib/rabbitmq
+        readinessProbe:
+          exec:
+            command: ["rabbitmq-diagnostics", "status"]
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+        livenessProbe:
+          exec:
+            command: ["rabbitmq-diagnostics", "ping"]
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+      volumes:
+      - name: rabbitmq-data
+        persistentVolumeClaim:
+          claimName: rabbitmq-data-pvc # This PVC must be created manually or via dynamic provisioning
+
+# --- Example Secret (rabbitmq-credentials.yaml) ---
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: rabbitmq-credentials
+#   namespace: rag-pipeline
+# type: Opaque
+# stringData: # Use stringData for unencoded values, K8s will encode them
+#   RABBITMQ_USER: "your-rabbitmq-user"    # Replace with actual desired username
+#   RABBITMQ_PASS: "your-rabbitmq-password" # Replace with actual desired password
+# ---
+
+# --- Example PersistentVolumeClaim (rabbitmq-pvc.yaml) ---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: rabbitmq-data-pvc
+#   namespace: rag-pipeline
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 5Gi # Adjust as needed
+# ---
+# Note: For a production RabbitMQ setup, consider using the RabbitMQ Cluster Kubernetes Operator
+# or a Helm chart which provides more robust configurations, clustering, and management features.
+# This YAML is a very basic single-instance setup.
+# Also, ensure appropriate NetworkPolicies are in place if default-deny is active.
+# The application pods (rag-pipeline-api and any worker pods) would need egress to this rabbitmq-service on port 5672.
+# RabbitMQ management UI (port 15672) might be exposed via an Ingress or port-forward for admin access.
+---

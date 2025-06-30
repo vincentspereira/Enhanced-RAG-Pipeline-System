@@ -7,41 +7,46 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - ./qdrant_storage:/qdrant/storage
+      - qdrant_storage_vol:/qdrant/storage # Changed to a named volume for clarity and better management
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"] # Qdrant's own health endpoint
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 40s # Give Qdrant some time to start up
 
   rag_api:
     build: .
     ports:
       - "8000:8000"
     volumes:
+      # For development, mount the current directory to see code changes live.
+      # For production, this line should typically be removed to use the code baked into the image.
       - .:/app
-      - ./cache:/app/cache
-      - ./logs:/app/logs
+      - ./cache:/app/cache # Host mount for cache
+      - ./logs:/app/logs   # Host mount for logs
     environment:
-      - PYTHONPATH=/app
-      - CUDA_VISIBLE_DEVICES=0
+      # PYTHONPATH might not be strictly necessary if using WORKDIR /app and standard installs
+      # - PYTHONPATH=/app
+      - CUDA_VISIBLE_DEVICES=0 # Ensure GPU is visible if host has it and Docker is configured
+      # Add any other necessary environment variables for the API, e.g., config paths if not default
+      # - CONFIG_FILE_PATH=/app/config/production.yaml
     depends_on:
       qdrant:
         condition: service_healthy
-    deploy:
+    deploy: # This section is more for Docker Swarm, but GPU reservation is useful
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              count: 1 # Request 1 GPU
               capabilities: [gpu]
-        source: ${PWD}/qdrant_storage
-        target: /qdrant/storage
-    environment:
-      - QDRANT_STORAGE_PATH=/qdrant/storage
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"] # Target rag_api's health endpoint
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 40s
+      retries: 5
+      start_period: 60s # Give the API time to start, especially if models are loaded
+
+volumes:
+  qdrant_storage_vol: {} # Define the named volume for Qdrant

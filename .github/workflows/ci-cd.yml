@@ -141,16 +141,51 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
         
-    - name: Build and push
+    - name: Build Docker image (no push yet)
+      id: build_image
       uses: docker/build-push-action@v4
       with:
         context: .
+        push: false # Build locally first, don't push yet
+        load: true # Load the image into the local Docker daemon for scanning
+        tags: user/rag-pipeline:${{ github.sha }} # Tag with SHA for scanning
+        cache-from: type=registry,ref=user/rag-pipeline:buildcache
+        cache-to: type=registry,ref=user/rag-pipeline:buildcache,mode=max
+
+    - name: Install Trivy
+      run: |
+        sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+        sudo apt-get update
+        sudo apt-get install -y trivy
+
+    - name: Scan Docker image with Trivy
+      run: |
+        trivy image --exit-code 0 --severity HIGH,CRITICAL user/rag-pipeline:${{ github.sha }}
+        # Use --exit-code 1 to fail CI on critical/high vulnerabilities, e.g.:
+        # trivy image --exit-code 1 --severity CRITICAL --ignore-unfixed user/rag-pipeline:${{ github.sha }}
+
+    - name: Push Docker image (if scan passes or is informational)
+      # This step assumes the previous trivy scan either passed (exit-code 0)
+      # or its failure is handled (e.g. by not using --exit-code 1, or by a conditional if)
+      # For a stricter pipeline, you might only run this if trivy exits 0.
+      # For now, this will run regardless of trivy's exit code unless trivy itself fails the job.
+      # To make it conditional, you'd need to manage the output/status of the trivy step.
+      # A simpler approach for now is to let Trivy fail the job if --exit-code 1 is used and issues are found.
+      # If Trivy found issues and exited with 1, this push step won't run.
+      uses: docker/build-push-action@v4
+      with:
+        context: . # Re-specify context, though image is already built
         push: true
         tags: |
           user/rag-pipeline:latest
           user/rag-pipeline:${{ github.sha }}
-        cache-from: type=registry,ref=user/rag-pipeline:buildcache
-        cache-to: type=registry,ref=user/rag-pipeline:buildcache,mode=max
+        # No need to specify cache here again if relying on the loaded image from previous step
+        # However, this action might rebuild if it doesn't find the exact image via its own mechanisms.
+        # To ensure it pushes the already built and loaded image:
+        # This action pushes the tags specified. If the image `user/rag-pipeline:${{ github.sha }}`
+        # is loaded into Docker from the previous 'build_image' step, this should pick it up.
 
   deploy:
     runs-on: ubuntu-latest

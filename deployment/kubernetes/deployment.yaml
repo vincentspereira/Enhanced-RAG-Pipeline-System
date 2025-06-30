@@ -38,9 +38,26 @@ spec:
     spec:
       containers:
       - name: rag-pipeline-api
-        image: rag-pipeline:latest
+        # IMPORTANT: Replace with your actual image registry and version/tag for production
+        image: your-registry/rag-pipeline:<VERSION>
         ports:
         - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /health # Assuming a /health endpoint exists in your API
+            port: 8000
+          initialDelaySeconds: 60 # Time to wait before first probe (e.g., for model loading)
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health # Assuming a /health endpoint exists in your API
+            port: 8000
+          initialDelaySeconds: 120 # Longer delay for liveness, after app should be fully up
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
         resources:
           limits:
             cpu: "4"
@@ -49,6 +66,7 @@ spec:
           requests:
             cpu: "2"
             memory: "8Gi"
+            nvidia.com/gpu: 1 # Also request GPU to ensure scheduling on GPU node
         volumeMounts:
         - name: config-volume
           mountPath: /app/config
@@ -61,10 +79,44 @@ spec:
         configMap:
           name: rag-pipeline-config
       - name: cache-volume
-        emptyDir: {}
+        # For persistent cache across pod restarts, define and use a PersistentVolumeClaim.
+        # Example:
+        persistentVolumeClaim:
+          claimName: rag-pipeline-cache-pvc # This PVC needs to be created separately or dynamically provisioned.
+        # If ephemeral cache is acceptable (lost on pod restart), use emptyDir:
+        # emptyDir: {}
       - name: logs-volume
+        # This PersistentVolumeClaim needs to be created separately
+        # or dynamically provisioned by a StorageClass in your cluster.
         persistentVolumeClaim:
           claimName: rag-pipeline-logs-pvc
+
+---
+# Example PVC definition for logs (if not dynamically provisioned) - place in its own YAML or apply separately
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: rag-pipeline-logs-pvc
+#   namespace: rag-pipeline
+# spec:
+#   accessModes:
+#     - ReadWriteOnce # Or ReadWriteMany if supported by your storage and multiple pods need to write
+#   resources:
+#     requests:
+#       storage: 10Gi # Adjust size as needed
+# ---
+# Example PVC definition for cache (if not dynamically provisioned) - place in its own YAML or apply separately
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: rag-pipeline-cache-pvc
+#   namespace: rag-pipeline
+# spec:
+#   accessModes:
+#     - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 5Gi # Adjust size as needed
 
 ---
 apiVersion: v1

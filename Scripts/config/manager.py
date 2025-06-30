@@ -53,6 +53,7 @@ class CacheSettingsConfig: # Renamed to avoid conflict with PathsConfig.cache_di
 @dataclass
 class FeatureFlagsConfig:
     enable_active_learning: bool = True
+    enable_elasticsearch_fallback: bool = True # Added new flag
     enable_categorization: bool = True
     enable_workflows: bool = True
     enable_knowledge_graph: bool = True # from Scripts/config.py
@@ -67,6 +68,29 @@ class SystemConfig:
     paths: PathsConfig
     cache_settings: CacheSettingsConfig
     feature_flags: FeatureFlagsConfig
+    elasticsearch: 'ElasticsearchConfig' # Forward declaration for type hint
+
+
+@dataclass
+class ElasticsearchConfig:
+    hosts: List[str] = field(default_factory=lambda: ["http://localhost:9200"])
+    index_name: str = "rag_elasticsearch_index"
+    username: Optional[str] = None
+    password: Optional[str] = None
+    api_key: Optional[str] = None
+    cloud_id: Optional[str] = None
+    semantic_weight: float = 0.7
+    keyword_weight: float = 0.3
+    enable_hybrid_search_in_es: bool = False # Default to false, RAGPipeline will combine
+    # Add other fields from ElasticsearchFallback.ElasticsearchConfig as needed e.g.
+    # index_settings: Optional[Dict[str, Any]] = None
+    # index_mappings: Optional[Dict[str, Any]] = None
+    batch_size: int = 1000
+    timeout: int = 30
+    max_retries: int = 3
+    retry_interval: int = 1
+    enable_fallback_for_es_itself: bool = True # Renamed from enable_fallback to avoid confusion
+    fallback_threshold_es: float = 0.8 # Renamed for clarity
 
 
 class ConfigManager:

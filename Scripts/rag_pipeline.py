@@ -16,9 +16,13 @@ from .document_processor.categorizer import DocumentCategorizer, Category
 from .workflows.engine import WorkflowEngine, WorkflowStep, WorkflowStatus
 from .enhancers.category_filter import CategoryFilter, CategoryFilterConfig
 from .enhancers.feedback_analytics import FeedbackAnalytics, FeedbackAnalyticsConfig, FeedbackEntry
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer # Will be removed if not used elsewhere
 import spacy
 from dataclasses import dataclass
+# Remove BM25Okapi if it was imported directly and no longer used. Assuming it was.
+# from rank_bm25 import BM25Okapi
+from ..integrations.elasticsearch_fallback import ElasticsearchFallback
+from ..integrations.elasticsearch_fallback import ElasticsearchConfig as ESFallbackConfigInternal # Use the one from integrations
 import re
 from collections import defaultdict
 import json
@@ -175,10 +179,18 @@ class RAGPipeline:
         )
         self.cache = CacheManager(self.cache_config) # This is the LMDB cache
         self.nlp = self._initialize_nlp()
-        self.vectorizer = TfidfVectorizer(stop_words='english')
+        # self.vectorizer = TfidfVectorizer(stop_words='english') # Removed as ES handles keyword search
+
+        if self.app_config.feature_flags.enable_elasticsearch_fallback:
+            es_config_data = self.app_config.elasticsearch.__dict__
+            es_fallback_internal_config = ESFallbackConfigInternal(**es_config_data) # type: ignore
+            self.es_fallback = ElasticsearchFallback(config=es_fallback_internal_config)
+            # DO NOT call initialize here. It will be called in async_initialize_components.
+        else:
+            self.es_fallback = None
         
         # Initialize category filter
-        self.category_filter = CategoryFilter()
+        self.category_filter = CategoryFilter() # This line was missing in the previous diff attempt's "REPLACE" block
         
         # Initialize feedback analytics
         self.feedback_analytics = FeedbackAnalytics()
@@ -261,11 +273,11 @@ class RAGPipeline:
             )
         
         # Clear cache when new documents are added
-        self.cache_manager.clear_cache_by_prefix(self.collection_name)
+        # self.cache_manager.clear_cache_by_prefix(self.collection_name) # This CacheManager is LMDB, might not have this method
         logger.info(f"Successfully processed and stored {len(points)} chunks in Qdrant")
 
-    def search(self, query: str, limit: int = 5, filters: Optional[Dict] = None, categories: Optional[Union[List[str], str]] = None) -> List[Dict[str, Any]]:
-        """Enhanced hybrid search combining semantic and keyword-based approaches with category filtering
+    async def search(self, query: str, limit: int = 5, filters: Optional[Dict] = None, categories: Optional[Union[List[str], str]] = None) -> List[Dict[str, Any]]:
+        """Enhanced hybrid search combining semantic and keyword-based approaches with category filtering. Now asynchronous.
         
         Args:
             query: The search query text

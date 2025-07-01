@@ -70,6 +70,10 @@ from security.audit_logger import AuditLogger, AuditEvent
 # Import QueryCache
 from caching.query_cache import QueryCache, CacheConfig as QueryCacheModuleConfig
 
+# Import DB Connectors
+from integrations.postgres_connector import PostgresConnector
+from integrations.mongodb_connector import MongoDBConnector
+
 
 # Load environment variables
 load_dotenv()
@@ -283,12 +287,49 @@ async def startup_event_main():
         logger.error(f"Failed to initialize QueryCache: {e}", exc_info=True)
         app.state.query_cache = None
 
+    # Initialize PostgresConnector if configured
+    if app_config.postgres:
+        try:
+            pg_connector_instance = PostgresConnector(config=app_config.postgres)
+            app.state.postgres_connector = pg_connector_instance
+            logger.info("PostgresConnector initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize PostgresConnector: {e}", exc_info=True)
+            app.state.postgres_connector = None
+    else:
+        app.state.postgres_connector = None
+        logger.info("PostgreSQL not configured, skipping PostgresConnector initialization.")
+
+    # Initialize MongoDBConnector if configured
+    if app_config.mongodb:
+        try:
+            mongo_connector_instance = MongoDBConnector(config=app_config.mongodb)
+            app.state.mongodb_connector = mongo_connector_instance
+            logger.info("MongoDBConnector initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize MongoDBConnector: {e}", exc_info=True)
+            app.state.mongodb_connector = None
+    else:
+        app.state.mongodb_connector = None
+        logger.info("MongoDB not configured, skipping MongoDBConnector initialization.")
+
 
     logger.info(f"{app.title} startup complete.")
 
 @app.on_event("shutdown")
 async def shutdown_event_main():
     logger.info(f"Shutting down {app.title}...")
+
+    # Close Postgres connection pool
+    if hasattr(app.state, 'postgres_connector') and app.state.postgres_connector:
+        app.state.postgres_connector.close_pool()
+        logger.info("PostgresConnector pool closed.")
+
+    # Close MongoDB connection
+    if hasattr(app.state, 'mongodb_connector') and app.state.mongodb_connector:
+        app.state.mongodb_connector.close_connection()
+        logger.info("MongoDBConnector connection closed.")
+
     if hasattr(app.state, 'rag_pipeline') and app.state.rag_pipeline and app.state.rag_pipeline.es_fallback:
         await app.state.rag_pipeline.es_fallback.close()
         logger.info("Closed RAGPipeline Elasticsearch connection.")

@@ -97,6 +97,21 @@ class RabbitMQConfig:
     # Add other params like prefetch_count, connection_attempts, retry_delay if needed
 
 @dataclass
+class PostgresConfig:
+    host: str = "localhost"
+    port: int = 5432
+    username: Optional[str] = "postgres" # Should be from secret in prod
+    password: Optional[str] = "postgres" # Should be from secret in prod
+    database: str = "rag_db"
+    connection_timeout: int = 10 # seconds
+
+@dataclass
+class MongoConfig:
+    connection_uri: Optional[str] = "mongodb://localhost:27017/" # Should be from secret in prod
+    database: str = "rag_db_mongo"
+    server_selection_timeout_ms: int = 5000 # milliseconds
+
+@dataclass
 class SystemConfig:
     model: ModelConfig
     vector_store: VectorStoreConfig
@@ -108,7 +123,9 @@ class SystemConfig:
     elasticsearch: 'ElasticsearchConfig'
     notification: NotificationConfig
     audit: AuditLoggerConfig
-    rabbitmq: RabbitMQConfig # Added RabbitMQConfig
+    rabbitmq: RabbitMQConfig
+    postgres: Optional[PostgresConfig] = None # Added PostgresConfig
+    mongodb: Optional[MongoConfig] = None   # Added MongoConfig
 
 
 @dataclass
@@ -159,7 +176,9 @@ class ConfigManager:
             elasticsearch=ElasticsearchConfig(**config_dict.get('elasticsearch', {})),
             notification=NotificationConfig(**config_dict.get('notification', {})),
             audit=AuditLoggerConfig(**config_dict.get('audit', {})),
-            rabbitmq=RabbitMQConfig(**config_dict.get('rabbitmq', {})) # Added rabbitmq
+            rabbitmq=RabbitMQConfig(**config_dict.get('rabbitmq', {})),
+            postgres=PostgresConfig(**config_dict.get('postgres', {})) if config_dict.get('postgres') is not None else None, # Added postgres
+            mongodb=MongoConfig(**config_dict.get('mongodb', {})) if config_dict.get('mongodb') is not None else None    # Added mongodb
         )
     
     def save_config(self):
@@ -180,8 +199,12 @@ class ConfigManager:
             'elasticsearch': self.config.elasticsearch.__dict__,
             'notification': self.config.notification.__dict__,
             'audit': self.config.audit.__dict__,
-            'rabbitmq': self.config.rabbitmq.__dict__ # Added rabbitmq
+            'rabbitmq': self.config.rabbitmq.__dict__
         }
+        if self.config.postgres:
+            config_dict['postgres'] = self.config.postgres.__dict__
+        if self.config.mongodb:
+            config_dict['mongodb'] = self.config.mongodb.__dict__
         
         with open(self.config_path, 'w') as f:
             yaml.dump(config_dict, f, default_flow_style=False)

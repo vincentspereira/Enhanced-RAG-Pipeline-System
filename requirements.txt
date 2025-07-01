@@ -86,14 +86,14 @@ watchdog==6.0.0
 snowflake-connector-python==3.5.0 # Moved here as it's a DB connector/utility
 
 # Development
-pytest==8.0.0 # Note: pytest is listed twice, consolidating to one version, taking 8.1.1 from testing
+# pytest==8.0.0 # Note: pytest is listed twice, consolidating to one version, taking 8.1.1 from testing - REMOVED
 black==24.1.1
 isort==5.13.2
 flake8==7.0.0
 mypy==1.8.0
 
 # Testing dependencies
-pytest==8.1.1
+pytest==8.1.1 # Kept this version
 pytest-asyncio==0.21.0
 pytest-cov==4.1.0
 pytest-mock==3.12.0
@@ -109,3 +109,8 @@ ollama
 
 # Messaging Queue
 pika==1.3.2 # Added pika for RabbitMQ
+
+# Prioritized Database Clients & Data Frameworks (Phase 1.4 Iteration 1)
+psycopg2-binary # For PostgreSQL
+pymongo # For MongoDB
+polars # Data framework

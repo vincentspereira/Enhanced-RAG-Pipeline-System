@@ -1,8 +1,8 @@
 model:
   embedding_model: "Snowflake-Labs/arctic-embed2"
-  llm_model: "meta-llama/Llama-2-7b-hf"
-  device: "cuda"
-  batch_size: 32
+  llm_model: "meta-llama/Llama-2-7b-hf" # Example, can be overridden by ENV_VAR: MODEL_LLM_MODEL
+  device: "cuda" # Can be overridden by ENV_VAR: MODEL_DEVICE (e.g., "cpu", "cuda:0")
+  batch_size: 32 # Can be overridden by ENV_VAR: MODEL_BATCH_SIZE
   max_length: 512
   versioning:
     enabled: true
@@ -14,26 +14,26 @@ model:
 
 # Vector store configuration with multiple providers
 vector_store:
-  provider: "qdrant"  # Default provider
+  provider: "qdrant"  # Default provider, ENV_VAR: VECTOR_STORE_PROVIDER
   qdrant:
-    host: "localhost"
-    port: 6333
-    collection_name: "documents"
-    vector_size: 768
+    host: "localhost" # ENV_VAR: QDRANT_HOST
+    port: 6333 # ENV_VAR: QDRANT_PORT
+    collection_name: "documents" # ENV_VAR: QDRANT_COLLECTION_NAME
+    vector_size: 768 # Usually fixed per model, but can be ENV_VAR: QDRANT_VECTOR_SIZE
   weaviate:
-    host: "localhost"
-    port: 8080
-    class_name: "Document"
-    api_key: ""
+    host: "localhost" # ENV_VAR: WEAVIATE_HOST
+    port: 8080 # ENV_VAR: WEAVIATE_PORT
+    class_name: "Document" # ENV_VAR: WEAVIATE_CLASS_NAME
+    api_key: "" # ENV_VAR: WEAVIATE_API_KEY (SET VIA ENVIRONMENT VARIABLE, DO NOT COMMIT ACTUAL KEY)
   pinecone:
-    api_key: ""
-    environment: "us-west1-gcp"
-    index_name: "documents"
-    dimension: 768
+    api_key: "" # ENV_VAR: PINECONE_API_KEY (SET VIA ENVIRONMENT VARIABLE, DO NOT COMMIT ACTUAL KEY)
+    environment: "us-west1-gcp" # ENV_VAR: PINECONE_ENVIRONMENT
+    index_name: "documents" # ENV_VAR: PINECONE_INDEX_NAME
+    dimension: 768 # Usually fixed per model
   milvus:
-    host: "localhost"
-    port: 19530
-    collection_name: "documents"
+    host: "localhost" # ENV_VAR: MILVUS_HOST
+    port: 19530 # ENV_VAR: MILVUS_PORT
+    collection_name: "documents" # ENV_VAR: MILVUS_COLLECTION_NAME
     vector_dim: 768
 
 # LLM service configuration with multiple providers
@@ -41,13 +41,13 @@ llm:
   default_provider: "huggingface"
   providers:
     huggingface:
-      models: ["meta-llama/Llama-2-7b-hf", "google/flan-t5-base"]
+      models: ["meta-llama/Llama-2-7b-hf", "google/flan-t5-base"] # ENV_VAR: LLM_PROVIDERS_HUGGINGFACE_MODELS (comma separated)
     openai:
-      api_key: ""
-      models: ["gpt-4o", "gpt-3.5-turbo"]
+      api_key: "" # ENV_VAR: OPENAI_API_KEY (SET VIA ENVIRONMENT VARIABLE, DO NOT COMMIT ACTUAL KEY)
+      models: ["gpt-4o", "gpt-3.5-turbo"] # ENV_VAR: LLM_PROVIDERS_OPENAI_MODELS (comma separated)
     anthropic:
-      api_key: ""
-      models: ["claude-3-opus-20240229"]
+      api_key: "" # ENV_VAR: ANTHROPIC_API_KEY (SET VIA ENVIRONMENT VARIABLE, DO NOT COMMIT ACTUAL KEY)
+      models: ["claude-3-opus-20240229"] # ENV_VAR: LLM_PROVIDERS_ANTHROPIC_MODELS (comma separated)
 
 # Knowledge graph configuration
 knowledge_graph:
@@ -69,14 +69,14 @@ enable_workflows: true
 
 # Logging configuration
 logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "logs/rag_pipeline.log"
+  level: "INFO" # ENV_VAR: LOGGING_LEVEL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s" # ENV_VAR: LOGGING_FORMAT
+  file: "logs/rag_pipeline.log" # ENV_VAR: LOGGING_FILE (Note: in containers, prefer stdout/stderr)
 
-# API configuration
+# API configuration (relevant if running services standalone, may be overridden by K8s service definitions)
 api:
-  host: "0.0.0.0"
-  port: 8000
-  workers: 4
-  timeout: 60
-  cors_origins: ["*"]
+  host: "0.0.0.0" # ENV_VAR: API_HOST
+  port: 8000 # ENV_VAR: API_PORT (Specific service ports like API_GATEWAY_PORT will take precedence)
+  workers: 4 # ENV_VAR: API_WORKERS
+  timeout: 60 # ENV_VAR: API_TIMEOUT
+  cors_origins: ["*"] # ENV_VAR: API_CORS_ORIGINS (comma separated)

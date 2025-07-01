@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service # This name is used by other services to discover Ollama
+  namespace: default # Or your target namespace
+  labels:
+    app: ollama
+spec:
+  type: ClusterIP # Only needs to be accessible within the cluster
+  selector:
+    app: ollama # Matches the labels of the Pods in the StatefulSet
+  ports:
+  - name: http
+    port: 11434 # Port the Service listens on (and other services will connect to)
+    targetPort: 11434 # Port the Ollama container listens on
+    protocol: TCP

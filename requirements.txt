@@ -86,7 +86,7 @@ watchdog==6.0.0
 snowflake-connector-python==3.5.0 # Moved here as it's a DB connector/utility
 
 # Development
-pytest==8.0.0 # Note: pytest is listed twice, consolidating to one version, taking 8.1.1 from testing
+# pytest is also under Testing dependencies, using version 8.1.1 from there.
 black==24.1.1
 isort==5.13.2
 flake8==7.0.0

@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: doc-processing-service
+  namespace: default # Or your target namespace
+  labels:
+    app: doc-processing-service
+spec:
+  replicas: 1 # Start with 1 for local testing
+  selector:
+    matchLabels:
+      app: doc-processing-service
+  template:
+    metadata:
+      labels:
+        app: doc-processing-service
+    spec:
+      containers:
+      - name: doc-processing-container
+        image: your-repo/rag-system:latest # Replace with your actual image name and tag
+        command: ["/app/entrypoint.sh"]
+        args: ["doc_processing_service"]
+        ports:
+        - containerPort: 8002 # Must match DOC_PROCESSING_SERVICE_PORT from ConfigMap
+          name: http
+        envFrom:
+        - configMapRef:
+            name: doc-processing-service-config # Reference the ConfigMap
+        # If secrets are needed (e.g., MONGO_PASSWORD):
+        # - secretRef:
+        #     name: doc-processing-service-secrets
+        resources: # Define resource requests and limits
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /health # Matches the health check endpoint in doc_processing_service.py
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+      # imagePullSecrets: # Add if using a private Docker registry
+      # - name: your-registry-secret

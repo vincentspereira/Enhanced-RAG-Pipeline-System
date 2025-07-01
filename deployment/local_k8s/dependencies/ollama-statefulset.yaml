@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: ollama
+  namespace: default # Or your target namespace
+  labels:
+    app: ollama
+spec:
+  serviceName: "ollama-service" # Important: Must match the Service name for headless service behavior if needed
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      # For local Kubernetes that might run on nodes with mixed architectures (e.g. Mac M1),
+      # you might need a nodeSelector or ensure your Ollama image supports the node's architecture.
+      # Official Ollama images are typically amd64. For ARM, community images might be needed.
+      # nodeSelector:
+      #   kubernetes.io/arch: amd64
+      containers:
+      - name: ollama
+        image: ollama/ollama:latest # Use official Ollama image
+        ports:
+        - containerPort: 11434
+          name: http
+          protocol: TCP
+        volumeMounts:
+        - name: ollama-models-storage
+          mountPath: /root/.ollama # Ollama stores models in /root/.ollama by default
+        # SecurityContext: # Consider running as non-root if image supports it and for production
+        #   runAsUser: 1000
+        #   runAsGroup: 1000
+        #   fsGroup: 1000
+        readinessProbe:
+          httpGet:
+            path: / # Ollama root path usually returns "Ollama is running"
+            port: 11434
+          initialDelaySeconds: 10
+          periodSeconds: 15
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 11434
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources: # Ollama can be resource-intensive, especially with many/large models
+          requests:
+            cpu: "500m"
+            memory: "2Gi" # Base memory, models will add to this
+          limits:
+            cpu: "2000m" # 2 CPU cores
+            memory: "8Gi" # Adjust based on expected models and load
+            # If your K8s nodes have GPUs and Ollama image supports it:
+            # nvidia.com/gpu: 1 # Ensure your nodes have GPU drivers and K8s device plugin
+  volumeClaimTemplates: # This will create a PersistentVolumeClaim for each replica
+  - metadata:
+      name: ollama-models-storage
+    spec:
+      accessModes: [ "ReadWriteOnce" ] # Suitable for StatefulSet
+      resources:
+        requests:
+          storage: 10Gi # Adjust storage size based on expected model sizes
+      # storageClassName: "standard" # Optional: specify a StorageClass.
+                                   # Local K8s (Minikube, Kind) often have a default one.
+                                   # For Kind, you might need to create a StorageClass or use hostPath.
+                                   # For Minikube, 'standard' usually works.
+                                   # If no default, PVC might remain Pending.
+                                   # For robust local testing with Kind, consider a hostPath provisioner
+                                   # or use kind's extraMounts to map a host directory into the node,
+                                   # then use a hostPath PV.
+                                   # For simplicity now, rely on default StorageClass.

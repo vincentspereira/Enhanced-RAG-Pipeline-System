@@ -112,6 +112,67 @@ class MongoConfig:
     server_selection_timeout_ms: int = 5000 # milliseconds
 
 @dataclass
+class MySQLConfig:
+    host: str = "localhost"
+    port: int = 3306
+    username: Optional[str] = "root" # Should be from secret
+    password: Optional[str] = ""     # Should be from secret
+    database: str = "rag_db_mysql"
+    connection_timeout: int = 10
+
+@dataclass
+class SQLiteConfig:
+    db_path: str = "rag_sqlite.db" # Path to the SQLite database file
+    timeout: int = 5 # seconds
+
+@dataclass
+class ChromaDBConfig:
+    # For client/server mode:
+    host: Optional[str] = "localhost"
+    port: Optional[int] = 8000
+    # For persistent local mode:
+    persist_directory: Optional[str] = "chroma_db_persistence" # Relative to a base path or absolute
+    # For in-memory mode, both host/port and persist_directory would be None or unspecified
+    # Or a specific mode setting:
+    mode: str = "memory" # "memory", "local_persistent", "remote_http"
+    collection_name: str = "rag_chroma_collection"
+
+@dataclass
+class BigQueryConfig:
+    project_id: Optional[str] = None # GCP Project ID, often from env GOOGLE_CLOUD_PROJECT
+    dataset_id: str = "rag_bigquery_dataset"
+    # Credentials can be via GOOGLE_APPLICATION_CREDENTIALS env var or explicitly passed if needed
+    # location: str = "US" # Default BigQuery location
+
+@dataclass
+class SnowflakeConfig: # Client library already in requirements.txt
+    account: Optional[str] = None # Snowflake account identifier (e.g., xy12345.us-west-2)
+    username: Optional[str] = None # Should be from secret
+    password: Optional[str] = None # Should be from secret
+    warehouse: Optional[str] = None
+    database: Optional[str] = "RAG_SNOWFLAKE_DB"
+    schema_name: Optional[str] = "PUBLIC" # schema is a reserved word in some contexts
+    role: Optional[str] = None
+    # authenticator: Optional[str] = None # e.g. 'externalbrowser' or for key-pair auth
+
+@dataclass
+class DuckDBConfig:
+    db_path: Optional[str] = ":memory:" # Default to in-memory, or specify a file path
+    read_only: bool = False
+    # config: Optional[Dict[str, Any]] = field(default_factory=dict) # For DuckDB specific settings
+
+@dataclass
+class DaskConfig:
+    # Dask configuration is often more about how it's deployed (local, distributed)
+    # For local use, it might not need much specific app config beyond resource limits
+    # set by the environment or job submission.
+    # Example:
+    # local_cluster_threads: Optional[int] = None # Number of threads per worker for local cluster
+    # local_cluster_workers: Optional[int] = None # Number of workers for local cluster
+    placeholder: Optional[str] = "Dask config placeholder"
+
+
+@dataclass
 class SystemConfig:
     model: ModelConfig
     vector_store: VectorStoreConfig
@@ -124,8 +185,15 @@ class SystemConfig:
     notification: NotificationConfig
     audit: AuditLoggerConfig
     rabbitmq: RabbitMQConfig
-    postgres: Optional[PostgresConfig] = None # Added PostgresConfig
-    mongodb: Optional[MongoConfig] = None   # Added MongoConfig
+    postgres: Optional[PostgresConfig] = None
+    mongodb: Optional[MongoConfig] = None
+    mysql: Optional[MySQLConfig] = None
+    sqlite: Optional[SQLiteConfig] = None
+    chromadb: Optional[ChromaDBConfig] = None
+    bigquery: Optional[BigQueryConfig] = None
+    snowflake: Optional[SnowflakeConfig] = None
+    duckdb: Optional[DuckDBConfig] = None
+    dask: Optional[DaskConfig] = None
 
 
 @dataclass
@@ -177,8 +245,15 @@ class ConfigManager:
             notification=NotificationConfig(**config_dict.get('notification', {})),
             audit=AuditLoggerConfig(**config_dict.get('audit', {})),
             rabbitmq=RabbitMQConfig(**config_dict.get('rabbitmq', {})),
-            postgres=PostgresConfig(**config_dict.get('postgres', {})) if config_dict.get('postgres') is not None else None, # Added postgres
-            mongodb=MongoConfig(**config_dict.get('mongodb', {})) if config_dict.get('mongodb') is not None else None    # Added mongodb
+            postgres=PostgresConfig(**config_dict.get('postgres', {})) if config_dict.get('postgres') is not None else None,
+            mongodb=MongoConfig(**config_dict.get('mongodb', {})) if config_dict.get('mongodb') is not None else None,
+            mysql=MySQLConfig(**config_dict.get('mysql', {})) if config_dict.get('mysql') is not None else None,
+            sqlite=SQLiteConfig(**config_dict.get('sqlite', {})) if config_dict.get('sqlite') is not None else None,
+            chromadb=ChromaDBConfig(**config_dict.get('chromadb', {})) if config_dict.get('chromadb') is not None else None,
+            bigquery=BigQueryConfig(**config_dict.get('bigquery', {})) if config_dict.get('bigquery') is not None else None,
+            snowflake=SnowflakeConfig(**config_dict.get('snowflake', {})) if config_dict.get('snowflake') is not None else None,
+            duckdb=DuckDBConfig(**config_dict.get('duckdb', {})) if config_dict.get('duckdb') is not None else None,
+            dask=DaskConfig(**config_dict.get('dask', {})) if config_dict.get('dask') is not None else None
         )
     
     def save_config(self):
@@ -205,6 +280,20 @@ class ConfigManager:
             config_dict['postgres'] = self.config.postgres.__dict__
         if self.config.mongodb:
             config_dict['mongodb'] = self.config.mongodb.__dict__
+        if self.config.mysql:
+            config_dict['mysql'] = self.config.mysql.__dict__
+        if self.config.sqlite:
+            config_dict['sqlite'] = self.config.sqlite.__dict__
+        if self.config.chromadb:
+            config_dict['chromadb'] = self.config.chromadb.__dict__
+        if self.config.bigquery:
+            config_dict['bigquery'] = self.config.bigquery.__dict__
+        if self.config.snowflake:
+            config_dict['snowflake'] = self.config.snowflake.__dict__
+        if self.config.duckdb:
+            config_dict['duckdb'] = self.config.duckdb.__dict__
+        if self.config.dask:
+            config_dict['dask'] = self.config.dask.__dict__
         
         with open(self.config_path, 'w') as f:
             yaml.dump(config_dict, f, default_flow_style=False)

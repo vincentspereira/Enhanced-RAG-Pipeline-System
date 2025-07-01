@@ -73,6 +73,11 @@ from caching.query_cache import QueryCache, CacheConfig as QueryCacheModuleConfi
 # Import DB Connectors
 from integrations.postgres_connector import PostgresConnector
 from integrations.mongodb_connector import MongoDBConnector
+from integrations.mysql_connector import MySQLConnector
+from integrations.sqlite_connector import SQLiteConnector
+from integrations.snowflake_connector import SnowflakeConnector
+from integrations.bigquery_connector import BigQueryConnector
+from vector_stores.chroma_vector_store import ChromaVectorStore # Assuming Chroma client is stateful for app.state
 
 
 # Load environment variables
@@ -313,6 +318,72 @@ async def startup_event_main():
         app.state.mongodb_connector = None
         logger.info("MongoDB not configured, skipping MongoDBConnector initialization.")
 
+    # Initialize MySQLConnector if configured
+    if app_config.mysql:
+        try:
+            mysql_connector_instance = MySQLConnector(config=app_config.mysql)
+            app.state.mysql_connector = mysql_connector_instance
+            logger.info("MySQLConnector initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize MySQLConnector: {e}", exc_info=True)
+            app.state.mysql_connector = None
+    else:
+        app.state.mysql_connector = None
+        logger.info("MySQL not configured, skipping MySQLConnector initialization.")
+
+    # Initialize SQLiteConnector if configured
+    if app_config.sqlite:
+        try:
+            sqlite_connector_instance = SQLiteConnector(config=app_config.sqlite)
+            app.state.sqlite_connector = sqlite_connector_instance
+            logger.info("SQLiteConnector initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize SQLiteConnector: {e}", exc_info=True)
+            app.state.sqlite_connector = None
+    else:
+        app.state.sqlite_connector = None
+        logger.info("SQLite not configured, skipping SQLiteConnector initialization.")
+
+    # Initialize ChromaDBVectorStore if configured
+    if app_config.chromadb:
+        try:
+            # Assuming ChromaDBConfig aligns with ChromaVectorStore's expected config
+            chroma_vs_instance = ChromaVectorStore(config=app_config.chromadb)
+            app.state.chroma_vector_store = chroma_vs_instance
+            logger.info(f"ChromaVectorStore initialized (mode: {app_config.chromadb.mode}).")
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaVectorStore: {e}", exc_info=True)
+            app.state.chroma_vector_store = None
+    else:
+        app.state.chroma_vector_store = None
+        logger.info("ChromaDB not configured, skipping ChromaVectorStore initialization.")
+
+    # Initialize SnowflakeConnector if configured
+    if app_config.snowflake:
+        try:
+            snowflake_connector_instance = SnowflakeConnector(config=app_config.snowflake)
+            app.state.snowflake_connector = snowflake_connector_instance
+            logger.info("SnowflakeConnector initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize SnowflakeConnector: {e}", exc_info=True)
+            app.state.snowflake_connector = None
+    else:
+        app.state.snowflake_connector = None
+        logger.info("Snowflake not configured, skipping SnowflakeConnector initialization.")
+
+    # Initialize BigQueryConnector if configured
+    if app_config.bigquery:
+        try:
+            bigquery_connector_instance = BigQueryConnector(config=app_config.bigquery)
+            app.state.bigquery_connector = bigquery_connector_instance
+            logger.info("BigQueryConnector initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize BigQueryConnector: {e}", exc_info=True)
+            app.state.bigquery_connector = None
+    else:
+        app.state.bigquery_connector = None
+        logger.info("BigQuery not configured, skipping BigQueryConnector initialization.")
+
 
     logger.info(f"{app.title} startup complete.")
 
@@ -329,6 +400,32 @@ async def shutdown_event_main():
     if hasattr(app.state, 'mongodb_connector') and app.state.mongodb_connector:
         app.state.mongodb_connector.close_connection()
         logger.info("MongoDBConnector connection closed.")
+
+    # Close MySQL connection
+    if hasattr(app.state, 'mysql_connector') and app.state.mysql_connector:
+        app.state.mysql_connector.close_connection()
+        logger.info("MySQLConnector connection closed.")
+
+    # Close SQLite connection
+    if hasattr(app.state, 'sqlite_connector') and app.state.sqlite_connector:
+        app.state.sqlite_connector.close_connection()
+        logger.info("SQLiteConnector connection closed.")
+
+    # Close Snowflake connection
+    if hasattr(app.state, 'snowflake_connector') and app.state.snowflake_connector:
+        app.state.snowflake_connector.close_connection()
+        logger.info("SnowflakeConnector connection closed.")
+
+    # Close BigQuery client (if it has an explicit close)
+    if hasattr(app.state, 'bigquery_connector') and app.state.bigquery_connector:
+        app.state.bigquery_connector.close_connection() # Assumes close_connection exists
+        logger.info("BigQueryConnector resources released (if applicable).")
+
+    # ChromaDB client might not need explicit close if it's HTTP based or managed internally
+    # if hasattr(app.state, 'chroma_vector_store') and app.state.chroma_vector_store:
+    #     # app.state.chroma_vector_store.client.close() # If applicable
+    #     logger.info("ChromaVectorStore client closed (if applicable).")
+
 
     if hasattr(app.state, 'rag_pipeline') and app.state.rag_pipeline and app.state.rag_pipeline.es_fallback:
         await app.state.rag_pipeline.es_fallback.close()

@@ -66,7 +66,14 @@ The system is designed with a modular architecture to facilitate easier maintena
 The system utilizes various data stores for different purposes, including Qdrant for vector storage, Elasticsearch for keyword search and hybrid capabilities, and potentially other relational or NoSQL databases for metadata, application state, or specific analytics needs.
 
 ### Database Connectors
-Basic connectors for PostgreSQL and MongoDB have been added to `Scripts/integrations/`, alongside existing support for Qdrant and Elasticsearch. These connectors provide foundational connectivity and health check capabilities. Further integration into application workflows will depend on specific use cases for these databases.
+Basic connectors and utility examples have been developed for a wider range of data systems, providing foundational connectivity and interaction patterns. These are located in `Scripts/integrations/` and `Scripts/utils/`. Current status:
+- **Vector Stores:** Qdrant (core), Elasticsearch (hybrid), Weaviate (stub), Pinecone (stub), Milvus (stub), ChromaDB (stub). pgVector examples added to PostgreSQL connector. FAISS utilities provided.
+- **Relational Databases:** PostgreSQL (connector with pgVector examples), MySQL (basic connector), SQLite (basic connector).
+- **NoSQL Databases:** MongoDB (basic connector), Redis (used for caching/rate-limiting).
+- **Data Warehouses:** Snowflake (basic connector), BigQuery (basic connector).
+- **Data Processing Frameworks:** Pandas (used), Polars (utilities added), DuckDB (utilities added), Dask (utilities added).
+
+These components primarily offer connectivity, health checks (ping), generic query execution, and simple CRUD/operation stubs. Deeper integration into specific RAG workflows or application logic will depend on evolving requirements. Configuration for these is managed via `config.yaml` and `Scripts/config/manager.py`.
 
 ### Advanced Database Features (Conceptual)
 

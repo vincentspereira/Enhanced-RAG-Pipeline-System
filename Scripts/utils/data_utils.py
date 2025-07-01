@@ -103,3 +103,91 @@ if __name__ == '__main__':
         else:
             print("Transformed (unexpectedly?):")
             print(transformed_df_str)
+
+    # --- DuckDB Examples ---
+    print("\n--- Testing DuckDB Examples ---")
+    import duckdb
+    from pathlib import Path
+
+    # Example 1: In-memory DB, query Pandas DataFrame
+    print("\n1. Querying Pandas DataFrame with DuckDB (in-memory):")
+    try:
+        import pandas as pd
+        pandas_df = pd.DataFrame({
+            'id': [1, 2, 3, 4],
+            'category': ['A', 'B', 'A', 'C'],
+            'value': [10.1, 20.2, 15.5, 5.0]
+        })
+        print("Original Pandas DataFrame:")
+        print(pandas_df)
+
+        # DuckDB can directly query pandas DataFrames registered as tables
+        con = duckdb.connect(database=':memory:', read_only=False)
+        # con.register('my_pandas_table', pandas_df) # No longer needed with modern DuckDB, can query directly
+
+        result_df_pandas = con.execute("SELECT category, SUM(value) AS total_value FROM pandas_df GROUP BY category ORDER BY category").fetchdf()
+        # Or using Polars for output: result_pl_pandas = con.execute("...").pl()
+        con.close()
+
+        print("Aggregated result from Pandas DataFrame via DuckDB:")
+        print(result_df_pandas)
+
+    except ImportError:
+        print("Pandas not installed, skipping Pandas-DuckDB example.")
+    except Exception as e:
+        print(f"Error in Pandas-DuckDB example: {e}")
+
+    # Example 2: Query Polars DataFrame
+    print("\n2. Querying Polars DataFrame with DuckDB (in-memory):")
+    try:
+        # Assuming Polars DataFrame df_from_string exists from previous Polars example
+        if df_from_string is not None and 'col_a' in df_from_string.columns and 'col_b' in df_from_string.columns:
+            print("Original Polars DataFrame (df_from_string):")
+            print(df_from_string)
+
+            con = duckdb.connect(database=':memory:', read_only=False)
+            # DuckDB can query Polars DataFrames directly if they are in scope
+            # con.register('my_polars_table', df_from_string) # Not needed
+
+            # Ensure col_a is numeric for sum, might need casting if it was read as string
+            # For this example, assuming df_from_string['col_a'] is numeric or castable by duckdb
+            try:
+                result_pl_polars = con.execute("SELECT col_b, SUM(col_a) AS total_col_a FROM df_from_string GROUP BY col_b ORDER BY col_b").pl()
+                print("Aggregated result from Polars DataFrame via DuckDB:")
+                print(result_pl_polars)
+            except Exception as e_query: # Catch potential DuckDB query errors (e.g. type mismatch)
+                 print(f"DuckDB query error on Polars DF: {e_query}. 'col_a' might not be numeric.")
+            finally:
+                con.close()
+        else:
+            print("Polars DataFrame 'df_from_string' not available or suitable for DuckDB example.")
+
+    except Exception as e:
+        print(f"Error in Polars-DuckDB example: {e}")
+
+    # Example 3: Directly query a CSV file
+    print("\n3. Directly querying a CSV file with DuckDB:")
+    temp_csv_path = Path("temp_duckdb_data.csv")
+    with open(temp_csv_path, "w") as f:
+        f.write("product_id,product_name,price,stock\n")
+        f.write("101,Apple,1.50,100\n")
+        f.write("102,Banana,0.75,150\n")
+        f.write("103,Orange,1.25,80\n")
+        f.write("101,Apple,1.55,50\n") # Duplicate product for aggregation
+
+    try:
+        con = duckdb.connect(database=':memory:', read_only=False)
+        # DuckDB can query CSV files directly using read_csv_auto function or by path
+        result_csv_query = con.execute(f"SELECT product_name, SUM(stock*price) AS total_value, AVG(price) as avg_price FROM read_csv_auto('{str(temp_csv_path)}') GROUP BY product_name ORDER BY product_name").pl()
+        # Or: result_csv_query = con.execute(f"SELECT ... FROM '{str(temp_csv_path)}' ...").pl() # Simpler syntax often works
+        con.close()
+
+        print("Result from querying CSV directly via DuckDB:")
+        print(result_csv_query)
+
+    except Exception as e:
+        print(f"Error in DuckDB CSV query example: {e}")
+    finally:
+        if temp_csv_path.exists():
+            temp_csv_path.unlink()
+            print(f"Cleaned up temporary CSV: {temp_csv_path}")

@@ -114,3 +114,11 @@ pika==1.3.2 # Added pika for RabbitMQ
 psycopg2-binary # For PostgreSQL
 pymongo # For MongoDB
 polars # Data framework
+
+# Database Clients & Data Frameworks (Phase 1.4 Iteration 2)
+PyMySQL # For MySQL
+google-cloud-bigquery # For Google BigQuery
+duckdb # For DuckDB
+dask[dataframe] # For Dask
+chromadb # For ChromaDB vector store
+faiss-cpu # For FAISS CPU-based indexing/search

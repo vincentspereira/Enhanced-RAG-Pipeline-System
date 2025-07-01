@@ -193,7 +193,8 @@ async def startup_event_main():
     doc_processor = ActualDocumentProcessor(config=app_config.processing)
     emb_generator = ActualEmbeddingGenerator(
         model_name=app_config.model.embedding_model,
-        device=app_config.model.device
+        device=app_config.model.device,
+        cpu_thread_count=app_config.model.cpu_thread_count # Pass cpu_thread_count
     )
     rag_pipeline_instance = RAGPipeline(
         app_config=app_config,

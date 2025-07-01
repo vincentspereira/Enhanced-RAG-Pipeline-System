@@ -1,0 +1,207 @@
+# --- ML-based Resource Predictor (Conceptual Outline) ---
+# Filename: Scripts/enhancers/ml_resource_predictor.py.example
+# Purpose: To outline a conceptual design for an ML-based system that predicts
+#          resource requirements for the RAG application, potentially informing
+#          the AutoScaler or custom HPA configurations.
+
+# This file is a placeholder for a conceptual design. No actual ML implementation follows.
+
+"""
+Conceptual Design for an ML-Powered Resource Predictor for the RAG System
+
+Objective:
+To predict future resource needs (CPU, memory, GPU, replicas) based on historical
+usage patterns, query characteristics, and document properties, allowing for more
+proactive and efficient scaling compared to purely reactive autoscaling.
+
+Core Components:
+1. Data Collector: Gathers relevant metrics and features.
+2. Feature Engineer: Prepares data for model training and inference.
+3. ML Model(s): Trains and serves prediction models.
+4. Prediction Consumer: Uses predictions to influence scaling decisions.
+
+--- Detailed Conceptual Breakdown ---
+
+1. Data Collector & Metrics for Prediction (Input Features):
+   ---------------------------------------------------------
+   - Historical System Metrics (from Prometheus, MetricsCollector in AutoScaler):
+     - Request rate (RPS) for various endpoints (e.g., /search_rag, /generate_response, /process_docs).
+     - Average and P90/P95 latency for key endpoints.
+     - CPU utilization (per pod, aggregate).
+     - Memory utilization (per pod, aggregate).
+     - GPU utilization and GPU memory usage (if applicable, per pod with GPU).
+     - Queue lengths (e.g., document processing queue if using RabbitMQ).
+     - Number of active users/sessions.
+     - Cache hit/miss rates.
+
+   - Request-Specific Features (logged or inferred for training data):
+     - For Search/Generate Queries:
+       - Query length.
+       - Query complexity (e.g., number of keywords, presence of filters, embedding similarity to known complex queries).
+       - Number of documents retrieved by vector search.
+       - Size of context passed to LLM.
+     - For Document Processing:
+       - Document type (PDF, DOCX, TXT).
+       - Document size (bytes, pages).
+       - Presence of images/tables requiring OCR or complex parsing.
+       - Language of the document.
+
+   - Time-based Features:
+     - Hour of day, day of week, day of month.
+     - Special events/holidays (if applicable).
+
+   - Current Resource Allocation:
+     - Number of active API pods.
+     - CPU/memory requests/limits per pod.
+     - Current batch sizes, worker counts for processing tasks.
+
+2. Target Variables for Prediction:
+   -------------------------------
+   - Future CPU/Memory/GPU demand (e.g., average utilization over the next N minutes/hours).
+   - Optimal number of replicas for the API service.
+   - Optimal batch size for document processing or embedding generation.
+   - Likelihood of hitting resource saturation (proactive alert).
+
+3. ML Model Types & Training:
+   -------------------------
+   - Time Series Models (for load/demand forecasting):
+     - ARIMA, SARIMA, Prophet, Exponential Smoothing for predicting RPS, overall CPU/memory load.
+     - LSTM or other recurrent neural networks (RNNs) for more complex patterns.
+   - Regression Models (for resource per request/task):
+     - Linear Regression, Gradient Boosting Machines (XGBoost, LightGBM), Neural Networks.
+     - To predict CPU seconds, memory MB, GPU time per query type or document type.
+     - Example: `predicted_cpu_seconds = model(query_length, num_retrieved_docs, context_size)`
+   - Classification Models (for predicting states):
+     - E.g., predict if the system will enter a high-load state requiring scale-up soon.
+
+   - Training:
+     - Requires a historical dataset of collected features and corresponding actual resource usage/performance.
+     - Regular retraining of models as usage patterns evolve.
+     - Offline evaluation metrics (RMSE, MAE for regression; F1-score, AUC for classification).
+     - MLOps pipeline for data collection, feature engineering, training, versioning, and deployment of these predictive models.
+
+4. Feature Engineering:
+   --------------------
+   - Lagged features (e.g., RPS from 1 hour ago).
+   - Rolling window statistics (e.g., average CPU utilization over the last 15 minutes).
+   - Cyclical features for time (e.g., sine/cosine transformations for hour of day).
+   - Embeddings for query/document characteristics if using more advanced models.
+
+5. Integration Points & Consuming Predictions:
+   ------------------------------------------
+   - **Informing K8s HPA:**
+     - Predictions could be exposed as custom metrics via a Prometheus adapter. The HPA could then scale based on `predicted_cpu_utilization` or `predicted_rps_target_replicas`.
+     - This is complex as HPA typically reacts to current/recent metrics. Using predictions might require a custom HPA controller or an intermediary that translates predictions into HPA-compatible metrics.
+   - **Informing `AutoScaler.py` (Application-Level Scaler):**
+     - The `LoadPredictor` class within `enhancers/auto_scaler.py` currently uses a simple linear trend. This could be replaced or augmented by the ML-based predictor.
+     - The ML predictor could provide more accurate `predicted_cpu`, `predicted_memory` values to the `_evaluate_threshold` method in `AutoScaler`.
+     - The `AutoScaler` could also use predictions to proactively adjust internal application parameters if the app supports it (e.g., pre-adjusting internal worker pools or batch sizes before load hits).
+   - **Directly Triggering Scaling Actions:**
+     - The ML predictor could directly suggest scaling actions (e.g., "increase API replicas by 2 for the next hour"). This would likely require a custom scaling orchestrator.
+   - **Capacity Planning:**
+     - Longer-term predictions could inform manual capacity planning (e.g., "we will need X more GPU nodes next quarter").
+
+6. Data Collection & Storage for ML Training:
+   ------------------------------------------
+   - Metrics from Prometheus/MetricsCollector need to be stored long-term (e.g., in a time-series database like VictoriaMetrics, InfluxDB, or a data lake).
+   - Request-specific features might need to be logged by the application (e.g., via the AuditLogger with extended metadata, or a dedicated analytics pipeline).
+   - A data pipeline (ETL/ELT) would be needed to collect, clean, and transform this data into a training set.
+
+7. Challenges & Considerations:
+   ---------------------------
+   - **Complexity:** Implementing a robust ML-based resource predictor is a significant undertaking.
+   - **Cold Start:** Models need sufficient historical data to be accurate.
+   - **Concept Drift:** Usage patterns change, requiring model retraining and monitoring.
+   - **Explainability:** Understanding why a model made a certain prediction can be difficult.
+   - **Integration Overhead:** Integrating predictions into existing autoscaling mechanisms needs careful design.
+   - **Resource Cost:** Training and serving these ML models itself consumes resources.
+
+--- Placeholder Class Structure (Illustrative) ---
+
+# class MLResourcePredictor:
+#     def __init__(self, model_registry_path, data_source_config):
+#         self.models = self._load_models(model_registry_path)
+#         self.data_source = self._connect_data_source(data_source_config)
+#         self.feature_engineer = FeatureEngineer()
+#         logger.info("MLResourcePredictor initialized (conceptual).")
+
+#     def _load_models(self, path):
+#         # Load pre-trained models (e.g., for CPU, memory, replica count)
+#         logger.info(f"Loading predictive models from {path} (conceptual).")
+#         return {"cpu_predictor": None, "replica_predictor": None} # Placeholder
+
+#     def _connect_data_source(self, config):
+#         # Connect to historical metrics data source
+#         logger.info(f"Connecting to data source with config: {config} (conceptual).")
+#         return None # Placeholder
+
+#     async def get_current_features(self) -> Dict[str, Any]:
+#         # Collect real-time features needed for prediction
+#         # This would involve querying Prometheus, application state, etc.
+#         logger.debug("Fetching current features for prediction (conceptual).")
+#         # Example features:
+#         # current_rps = ...
+#         # current_avg_latency = ...
+#         # current_active_users = ...
+#         # time_features = self.feature_engineer.get_time_features(datetime.now())
+#         return {"rps": 100, "avg_latency": 0.5, "active_users": 50} # Dummy data
+
+#     async def predict_resources(self, minutes_ahead: int = 15) -> Dict[str, Any]:
+#         """
+#         Predicts resource needs for the near future.
+#         Returns a dictionary with predicted values, e.g.:
+#         {
+#             "predicted_cpu_utilization_avg": 0.75, (for next 'minutes_ahead')
+#             "predicted_memory_utilization_avg": 0.60,
+#             "recommended_api_replicas": 5,
+#             "confidence": 0.85
+#         }
+#         """
+#         logger.info(f"Predicting resources for {minutes_ahead} minutes ahead (conceptual).")
+#         current_features = await self.get_current_features()
+#         processed_features = self.feature_engineer.transform(current_features) # Placeholder
+
+#         # In a real scenario, each model would predict its target:
+#         # predicted_cpu = self.models["cpu_predictor"].predict(processed_features)
+#         # recommended_replicas = self.models["replica_predictor"].predict(processed_features)
+
+#         # Dummy prediction:
+#         return {
+#             "predicted_cpu_utilization_avg": current_features.get("rps", 100) * 0.005, # Simplistic
+#             "recommended_api_replicas": int(current_features.get("rps", 100) / 20) + 2, # Simplistic
+#             "confidence": 0.7 # Dummy confidence
+#         }
+
+# class FeatureEngineer:
+#     def get_time_features(self, dt_object):
+#         return {
+#             "hour_sin": np.sin(2 * np.pi * dt_object.hour / 24),
+#             "hour_cos": np.cos(2 * np.pi * dt_object.hour / 24),
+#             "dayofweek": dt_object.weekday()
+#         }
+#     def transform(self, raw_features):
+#         # Apply transformations like scaling, encoding, creating lagged features
+#         return raw_features # Placeholder
+
+# How this might be used by AutoScaler:
+# async def _make_scaling_decisions(self): # In AutoScaler
+#     # ...
+#     if self.config.load_prediction_enabled and hasattr(self, 'ml_predictor') and self.ml_predictor:
+#         try:
+#             ml_predictions = await self.ml_predictor.predict_resources(self.config.prediction_window_minutes)
+#             if ml_predictions.get("confidence", 0) > 0.7: # Example threshold
+#                 # Use ml_predictions to adjust targets or make proactive decisions
+#                 logger.info(f"ML Predictor suggests: {ml_predictions}")
+#                 # Example: update 'prediction' dict passed to _evaluate_threshold
+#                 prediction["cpu_percent"] = ml_predictions.get("predicted_cpu_utilization_avg", latest_metrics.cpu_percent) * 100
+#                 # Potentially directly influence replica counts if mechanism exists
+#         except Exception as e:
+#             logger.error(f"Error getting ML resource prediction: {e}")
+#     # ... rest of scaling logic ...
+"""
+Note: This is a high-level conceptual outline. A full implementation would require
+significant effort in data engineering, model development, training, and integration.
+The focus for Phase 1 would be on establishing the data collection mechanisms and
+potentially starting with simpler heuristic-based predictive logic within the existing
+LoadPredictor before moving to full ML models.
+"""

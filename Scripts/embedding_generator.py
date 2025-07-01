@@ -14,8 +14,22 @@ class EmbeddingGenerator:
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", device: str = None):
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {self.device}")
         
+        # CPU thread configuration
+        # This assumes that the 'config' object passed to this class or accessible globally
+        # has a model.cpu_thread_count attribute.
+        # For now, let's make it an optional constructor argument,
+        # which RAGPipeline would populate from app_config.model.cpu_thread_count.
+        # This will be passed during __init__ by RAGPipeline after this change.
+        # For direct instantiation in tests or standalone, it might be None.
+        self.cpu_thread_count = kwargs.get("cpu_thread_count") # Will be passed by RAGPipeline
+
+        if self.device == "cpu" and self.cpu_thread_count is not None and self.cpu_thread_count > 0:
+            torch.set_num_threads(self.cpu_thread_count)
+            logger.info(f"Using device: {self.device} with {torch.get_num_threads()} threads for PyTorch.")
+        else:
+            logger.info(f"Using device: {self.device}. Default PyTorch threads for CPU, or GPU active.")
+
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).to(self.device)
         self.model.eval()  # Set model to evaluation mode

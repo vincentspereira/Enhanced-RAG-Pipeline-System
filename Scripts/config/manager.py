@@ -19,6 +19,7 @@ class ModelConfig:
     ollama_completion_model: Optional[str] = "llama2" # Default completion model
     ollama_embedding_model: Optional[str] = None # Specific model for embeddings via Ollama, if different
     ollama_request_timeout: int = 120 # Timeout in seconds for Ollama requests
+    cpu_thread_count: Optional[int] = None # Number of threads for PyTorch on CPU, None for default
 
 @dataclass
 class VectorStoreConfig:

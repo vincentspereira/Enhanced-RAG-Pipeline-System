@@ -26,16 +26,22 @@ class LLMService(ABC):
 class HuggingFaceLLM(LLMService):
     """Implementation for HuggingFace models."""
     
-    def __init__(self, model_name: str):
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
+    def __init__(self, model_name: str, device: Optional[str] = None, cpu_thread_count: Optional[int] = None):
+        self.model_name = model_name
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        if self.device == "cpu" and cpu_thread_count is not None and cpu_thread_count > 0:
+            torch.set_num_threads(cpu_thread_count)
+            logger.info(f"HuggingFaceLLM: Using device: {self.device} with {torch.get_num_threads()} threads for PyTorch.")
+        else:
+            logger.info(f"HuggingFaceLLM: Using device: {self.device}. Default PyTorch threads for CPU, or GPU active.")
+
+        self.model = AutoModelForCausalLM.from_pretrained(model_name).to(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        
-        # Move model to GPU if available
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model.to(self.device)
-    
-    def generate(self, prompt: str, max_length: int = 100, 
-                temperature: float = 0.7) -> str:
+        self.model.eval() # Set to evaluation mode
+
+    def generate(self, prompt: str, max_length: int = 100, # Default max_length from class
+                 temperature: float = 0.7) -> str:
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
         
         outputs = self.model.generate(
@@ -104,11 +110,16 @@ def create_llm_service_from_config(config: Any) -> LLMService: # Use Any for con
     service_name = getattr(config, 'llm_service', 'huggingface').lower()
 
     if service_name == "huggingface":
-        hf_model_name = getattr(config, 'llm_model', "gpt2") # Default to gpt2 if not specified
-        # Note: HuggingFaceLLM might need more config like device, max_length etc. from ModelConfig
-        # For now, it only takes model_name. This might need to be expanded.
-        return HuggingFaceLLM(model_name=hf_model_name)
+        hf_model_name = getattr(config, 'llm_model', "gpt2")
+        device = getattr(config, 'device', None) # Get device from ModelConfig
+        cpu_threads = getattr(config, 'cpu_thread_count', None) # Get cpu_thread_count
+        return HuggingFaceLLM(
+            model_name=hf_model_name,
+            device=device,
+            cpu_thread_count=cpu_threads
+        )
     elif service_name == "openai":
+        # OpenAI client doesn't use local device or cpu_thread_count config directly
         api_key = getattr(config, 'openai_api_key', os.getenv("OPENAI_API_KEY"))
         model_name = getattr(config, 'openai_model_name', "gpt-3.5-turbo")
         # Add other OpenAI specific params from config if OpenAILLM supports them

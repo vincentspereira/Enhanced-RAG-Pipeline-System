@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-api-gateway
+  namespace: default # Or your target namespace
+  labels:
+    app: internal-api-gateway
+spec:
+  type: NodePort # Use NodePort for local testing. For cloud, consider LoadBalancer.
+  selector:
+    app: internal-api-gateway # Matches the labels of the Pods in the Deployment
+  ports:
+  - name: http
+    port: 80 # Port the Service listens on within the cluster
+    targetPort: 8000 # Port the container (gateway app) listens on (must match containerPort in Deployment and API_GATEWAY_PORT)
+    # nodePort: 30080 # Optional: specify a NodePort, otherwise one will be auto-assigned (typically 30000-32767)
+                     # If specified, ensure it's free on your local K8s nodes.
+                     # For auto-assignment, remove this line.
+protocol: TCP

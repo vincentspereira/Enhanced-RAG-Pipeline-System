@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: internal-api-gateway
+  namespace: default # Or your target namespace
+  labels:
+    app: internal-api-gateway
+spec:
+  replicas: 1 # Start with 1 replica for local testing
+  selector:
+    matchLabels:
+      app: internal-api-gateway
+  template:
+    metadata:
+      labels:
+        app: internal-api-gateway
+    spec:
+      containers:
+      - name: gateway-container
+        image: your-repo/rag-system:latest # Replace with your actual image name and tag
+        # Command to run the internal_api_gateway service via entrypoint.sh
+        command: ["/app/entrypoint.sh"]
+        args: ["internal_api_gateway"]
+        ports:
+        - containerPort: 8000 # Must match API_GATEWAY_PORT from ConfigMap if that's what the app binds to
+          name: http
+        envFrom:
+        - configMapRef:
+            name: internal-api-gateway-config # Reference the ConfigMap created earlier
+        resources: # Define resource requests and limits as appropriate
+          requests:
+            cpu: "100m" # 0.1 CPU core
+            memory: "128Mi" # 128 Megabytes
+          limits:
+            cpu: "500m" # 0.5 CPU core
+            memory: "512Mi"
+        readinessProbe:
+          httpGet:
+            path: /gateway_health # Matches the health check endpoint in internal_api_gateway.py
+            port: http # Refers to the 'http' port defined in containerPort
+          initialDelaySeconds: 10 # Time to wait before first probe
+          periodSeconds: 15 # How often to probe
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /gateway_health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+      # imagePullSecrets: # Add if using a private Docker registry
+      # - name: your-registry-secret

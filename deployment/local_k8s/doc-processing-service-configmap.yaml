@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doc-processing-service-config
+  namespace: default # Or your target namespace
+data:
+  DOC_PROCESSING_SERVICE_PORT: "8002" # Port the service itself will listen on
+  DOC_PROCESSING_SERVICE_HOST: "0.0.0.0"
+
+  LOGGING_LEVEL: "INFO"
+
+  # Example for future MongoDB integration for metadata storage
+  # MONGO_HOST: "mongodb-service" # K8s service name for MongoDB
+  # MONGO_PORT: "27017"
+  # MONGO_DB: "document_metadata_db"
+  # MONGO_USER: "docproc_user"
+  # MONGO_PASSWORD: "" # This should come from a Secret
+
+  # Add other configurations as the service evolves
+  # For example, connection details for S3, Kafka, etc.

@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-query-service
+  namespace: default # Or your target namespace
+  labels:
+    app: rag-query-service
+spec:
+  replicas: 1 # Start with 1 for local testing
+  selector:
+    matchLabels:
+      app: rag-query-service
+  template:
+    metadata:
+      labels:
+        app: rag-query-service
+    spec:
+      containers:
+      - name: rag-query-container
+        image: your-repo/rag-system:latest # Replace with your actual image name and tag
+        command: ["/app/entrypoint.sh"]
+        args: ["rag_query_service"]
+        ports:
+        - containerPort: 8001 # Must match RAG_SERVICE_PORT from ConfigMap
+          name: http
+        envFrom:
+        - configMapRef:
+            name: rag-query-service-config # Reference the ConfigMap
+        # If POSTGRES_PASSWORD or other secrets are needed:
+        # - secretRef:
+        #     name: rag-query-service-secrets
+        resources:
+          requests:
+            cpu: "200m" # Embedding models can be CPU intensive
+            memory: "512Mi" # Adjust based on model size
+          limits:
+            cpu: "1000m" # 1 CPU core
+            memory: "2Gi" # Adjust based on model size and expected load
+          # If using GPU (MODEL_DEVICE="cuda"):
+          # limits:
+          #   nvidia.com/gpu: 1 # Request 1 GPU
+        readinessProbe:
+          httpGet:
+            path: /health # Matches the health check endpoint in rag_query_service.py
+            port: http
+          initialDelaySeconds: 20 # Model loading can take time
+          periodSeconds: 20
+          timeoutSeconds: 10
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 60 # Longer delay for liveness after startup
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+      # imagePullSecrets: # Add if using a private Docker registry
+      # - name: your-registry-secret

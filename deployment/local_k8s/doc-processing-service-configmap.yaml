@@ -9,6 +9,16 @@ data:
 
   LOGGING_LEVEL: "INFO"
 
+  # Qdrant Configuration
+  QDRANT_HOST: "qdrant-service" # K8s service name for Qdrant
+  QDRANT_PORT: "6333" # Qdrant HTTP port
+  QDRANT_COLLECTION_NAME: "documents" # Should match the one used by RAG Query Service
+  # QDRANT_API_KEY: "" # Set if your Qdrant instance requires an API key (use Secrets for actual keys)
+
+  # Embedding Model Configuration (should ideally be consistent with RAG Query Service)
+  EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2" # Default model
+  MODEL_DEVICE: "cpu" # "cpu" or "cuda". Ensure Docker image and K8s node support CUDA if "cuda".
+
   # Example for future MongoDB integration for metadata storage
   # MONGO_HOST: "mongodb-service" # K8s service name for MongoDB
   # MONGO_PORT: "27017"

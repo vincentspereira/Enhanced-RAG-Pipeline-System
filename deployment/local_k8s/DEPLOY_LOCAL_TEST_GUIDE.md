@@ -161,14 +161,55 @@ helm install qdrant-db qdrant/qdrant \
 ```
 Ensure the service name matches `QDRANT_HOST` in `rag-query-service-configmap.yaml` (which is `qdrant-service`).
 
-### 4.2. (Future) Deploy PostgreSQL & MongoDB
-Placeholder for when these are needed. You would typically use Helm charts:
-*   **PostgreSQL**: `helm install my-postgres bitnami/postgresql --set auth.database=yourdb --set auth.username=youruser --set auth.password=yourpass`
-*   **MongoDB**: `helm install my-mongodb bitnami/mongodb --set auth.rootUser=admin --set auth.rootPassword=adminpass`
+### 4.2. Deploy Ollama
 
-Remember to update service names and credentials in your application's ConfigMaps/Secrets if you deploy these.
+Ollama is used by the RAG Query Service to generate answers.
 
-## 5. Deploy Application Services
+1.  **Apply the Ollama StatefulSet and Service manifests**:
+    ```bash
+    kubectl apply -f deployment/local_k8s/dependencies/ollama-statefulset.yaml
+    kubectl apply -f deployment/local_k8s/dependencies/ollama-service.yaml
+    ```
+
+2.  **Wait for Ollama to be ready**:
+    ```bash
+    kubectl get statefulset ollama -w
+    kubectl get pods -l app=ollama -w
+    # Wait until the ollama-0 pod is Running and Ready (1/1).
+    ```
+    The first time, it might take a bit longer if a PersistentVolumeClaim needs to be provisioned and bound. If the PVC remains `Pending`, you might need to configure a default `StorageClass` in your local Kubernetes cluster or specify an existing one in `ollama-statefulset.yaml`. For Minikube, `standard` often works. For Kind, you might need to set up a local path provisioner or use `hostPath` volumes for simpler local persistence if model persistence is key. If model persistence isn't critical for every local test run, you can change `volumeClaimTemplates` to an `emptyDir` volume in `ollama-statefulset.yaml`.
+
+3.  **Pull a model into Ollama**:
+    Once the `ollama-0` pod is running, you need to pull a model for the RAG service to use. The default in `rag-query-service-configmap.yaml` will be `llama2` (or similar).
+    ```bash
+    # Find the Ollama pod name (usually ollama-0)
+    OLLAMA_POD=$(kubectl get pods -l app=ollama -o jsonpath='{.items[0].metadata.name}')
+    echo "Ollama pod: $OLLAMA_POD"
+
+    # Pull the model (e.g., llama2). This might take some time.
+    kubectl exec -it $OLLAMA_POD -- ollama pull llama2
+    # You can replace 'llama2' with another model like 'mistral' if preferred,
+    # but ensure RAG_QUERY_SERVICE_LLM_MODEL_NAME is updated accordingly.
+    ```
+    You can check available models with `kubectl exec -it $OLLAMA_POD -- ollama list`.
+
+### 4.3. (Future) Deploy PostgreSQL & MongoDB
+Placeholder for when these are needed. You would typically use Helm charts.
+
+## 5. Configure Services to Find Ollama
+
+The `rag-query-service` needs to know the URL for the Ollama API. This is defined in its ConfigMap.
+Ensure `deployment/local_k8s/rag-query-service-configmap.yaml` has:
+```yaml
+data:
+  # ... other configs ...
+  OLLAMA_API_URL: "http://ollama-service:11434" # Points to the K8s service for Ollama
+  LLM_MODEL_NAME: "llama2" # Or the model you pulled, e.g., "mistral"
+  # ...
+```
+This should already be set if you are applying the latest version of the ConfigMap.
+
+## 6. Deploy Application Services
 
 Apply the Kubernetes manifests for the RAG system services:
 
@@ -273,24 +314,88 @@ Expected:
 ```
 Check logs of `doc-processing-service` to see the "Document received" message.
 
-### 8.5. Test RAG Query Service (via Gateway)
-**Note**: This test requires Qdrant to be running and the collection specified in `rag-query-service-configmap.yaml` (default: `documents`) to exist. For Iteration 1, the service *assumes* the collection exists. You might need to create it manually in Qdrant if it's the first time.
-Also, to get meaningful search results, you'd need to have indexed some documents into Qdrant. The current RAG Query Service stub doesn't index anything, only queries.
+### 8.5. Test RAG Query Service (LLM Integration - via Gateway)
+**Note**: This test requires Ollama and Qdrant to be running. The RAG Query Service will use the LLM model specified in its config (default `llama2`) and the Qdrant collection (default `documents`). Ensure the `llama2` (or your configured) model is pulled in Ollama.
 
-This test will primarily check if the query endpoint is reachable and returns an empty list or an error if the collection isn't ready.
+This test checks if the service can retrieve from Qdrant (even if empty) and generate an answer using the LLM.
 ```bash
 curl -X POST "<gateway-url>/rag/query" \
   -H "Content-Type: application/json" \
-  -d '{"query": "test query", "top_k": 1}'
+  -d '{"query": "What is the capital of France?", "top_k": 1, "generate_answer": true}'
 ```
-Expected (if Qdrant is up and collection exists, but no data):
+Expected (if Qdrant is up, collection exists (even if empty), and Ollama with model is running):
 ```json
 {
-  "query": "test query",
-  "results": []
+  "query": "What is the capital of France?",
+  "search_results": [], // Or some results if you've indexed data
+  "answer": "The capital of France is Paris.", // Or similar LLM response, might vary. If no context, it might answer from its general knowledge or state it couldn't find info.
+  "llm_model_used": "llama2" // Or your configured model
 }
 ```
-Or an error if Qdrant/collection is misconfigured. Check RAG service logs.
+Check RAG service logs for details of Qdrant interaction and Ollama calls. If you get an error or "issue generating answer", check Ollama pod logs and RAG service logs.
+
+### 8.6. End-to-End Test: Process and Query Document
+
+This test verifies the basic document processing and RAG query flow.
+
+1.  **Create a simple text file `testdoc.txt`**:
+    ```
+    echo "Jules the AI agent enjoys software engineering and helping users." > testdoc.txt
+    ```
+
+2.  **Process `testdoc.txt` using the Document Processing Service (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/document/process_document" \
+      -F "file=@testdoc.txt" \
+      -F "metadata_json={\"source\":\"e2e_test\", \"doc_title\":\"Jules AI Agent\"}"
+    ```
+    Expected response should indicate successful indexing, e.g.:
+    ```json
+    {
+      "message": "Document processed and indexed successfully.",
+      "filename": "testdoc.txt",
+      "qdrant_id": "some-uuid-or-custom-id", // The ID used in Qdrant
+      "metadata_processed": {
+        "source": "e2e_test", // Or "testdoc.txt" if source wasn't in metadata_json
+        "doc_title": "Jules AI Agent",
+        "original_filename": "testdoc.txt",
+        "_internal_id": "some-uuid-or-custom-id"
+      },
+      "status": "indexed"
+    }
+    ```
+    Check `doc-processing-service` logs for confirmation of embedding and Qdrant upsert.
+
+3.  **Wait a few seconds for indexing to settle (optional, usually fast).**
+
+4.  **Query the RAG Service for content from the processed document (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/rag/query" \
+      -H "Content-Type: application/json" \
+      -d '{"query": "What does Jules the AI agent enjoy?", "top_k": 1, "generate_answer": true}'
+    ```
+    Expected response (will vary based on LLM and exact context):
+    ```json
+    {
+      "query": "What does Jules the AI agent enjoy?",
+      "search_results": [
+        {
+          "id": "some-uuid-or-custom-id", // Should match the qdrant_id from step 2
+          "score": 0.8, // Example score, will vary
+          "text": "Jules the AI agent enjoys software engineering and helping users.",
+          "metadata": {
+            "source": "e2e_test", // Or "testdoc.txt"
+            "doc_title": "Jules AI Agent",
+            "original_filename": "testdoc.txt",
+            "_internal_id": "some-uuid-or-custom-id"
+          }
+        }
+      ],
+      "answer": "Jules the AI agent enjoys software engineering and helping users.", // Or similar LLM-generated answer
+      "llm_model_used": "llama2" // Or your configured model
+    }
+    ```
+    If the `search_results` are empty or the answer is generic, check Qdrant data (e.g. using Qdrant dashboard if accessible, or by adding a debug endpoint to one of the services to inspect Qdrant). Ensure the document was indexed correctly and the query is relevant.
 
 ## 9. Troubleshooting
 

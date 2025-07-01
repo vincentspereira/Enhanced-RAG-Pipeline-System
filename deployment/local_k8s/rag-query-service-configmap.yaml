@@ -18,6 +18,10 @@ data:
   EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2" # Default model
   MODEL_DEVICE: "cpu" # "cpu" or "cuda". Ensure Docker image and K8s node support CUDA if "cuda".
 
+  # Ollama and LLM Configuration
+  OLLAMA_API_URL: "http://ollama-service:11434" # K8s service name for Ollama
+  LLM_MODEL_NAME: "llama2" # Default LLM model to use with Ollama (e.g., llama2, mistral)
+
   LOGGING_LEVEL: "INFO"
   # Add other necessary configurations for the RAG Query Service here
   # For example, if it needed to connect to PostgreSQL for metadata:

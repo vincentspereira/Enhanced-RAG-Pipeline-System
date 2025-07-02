@@ -13,7 +13,20 @@ version: 0.1.0
 
 # This is the version number of the application being deployed. This version number should be
 # incremented each time you make changes to the application.
-appVersion: "1.0.0"
+appVersion: "1.0.0" # Corresponds to the version of the app itself
+
+dependencies:
+  - name: qdrant
+    version: "0.7.3" # Check for latest stable/compatible version from Qdrant's Helm repo
+    repository: "https://qdrant.github.io/qdrant-helm"
+    condition: qdrant.enabled # Only install if qdrant.enabled is true in values.yaml
+    # alias: qdrant-dependency # Optional alias if needed
+
+  - name: redis
+    version: "18.14.0" # Check for latest stable/compatible version from Bitnami's Helm repo
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled # Only install if redis.enabled is true in values.yaml
+    # alias: redis-dependency # Optional alias
 
 # Optional: Specify maintainers
 # maintainers:

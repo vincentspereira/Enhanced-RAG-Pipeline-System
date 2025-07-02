@@ -147,19 +147,15 @@ spec:
 ```
 Apply it:
 ```bash
-kubectl apply -f deployment/local_k8s/dependencies/qdrant-deployment.yaml
+kubectl apply -f deployment/local_k8s/dependencies/qdrant-deployment.yaml # Ensure service name is qdrant-service
+kubectl apply -f deployment/local_k8s/dependencies/qdrant-service.yaml # If you created a separate service file
 ```
 
-**Option B: Using Helm (More Flexible)**
-```bash
-helm repo add qdrant https://qdrant.github.io/qdrant-helm
-helm install qdrant-db qdrant/qdrant \
-  --set service.name=qdrant-service \
-  --set service.httpPort=6333 \
-  --set service.grpcPort=6334 \
-  --set persistence.enabled=false # For local testing, or true with storageClass for persistence
-```
-Ensure the service name matches `QDRANT_HOST` in `rag-query-service-configmap.yaml` (which is `qdrant-service`).
+**Option B: Helm Subchart Deployment (if `qdrant.enabled` is `true` in Helm `values.yaml`)**
+   If you set `qdrant.enabled: true` in your `charts/rag-system/values.yaml` (or via `--set qdrant.enabled=true`), Helm will deploy Qdrant when you install the `rag-system` chart.
+   The RAG Query Service and Document Processing Service configurations in `values.yaml` are set up to point to the Helm-deployed Qdrant service name (`{{ .Release.Name }}-qdrant`).
+   No separate `kubectl apply` or `helm install qdrant/...` is needed for Qdrant in this case.
+   You might need to run `helm dependency update ./charts/rag-system` once before installing if you've just added the dependency to `Chart.yaml`.
 
 ### 4.2. Deploy Ollama
 
@@ -223,34 +219,25 @@ RabbitMQ can be used for asynchronous task processing between services.
     ```
     Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
 
-### 4.4. Deploy Redis (for Caching)
+### 4.4. Deploy Redis (for Caching) - *Now potentially managed by Helm*
 
-Redis is used by the RAG Query Service for caching search results and LLM answers.
+Redis is used by the RAG Query Service for caching.
 
-1.  **Apply the Redis Deployment and Service manifests**:
+**Option A: Manual Deployment (if `redis.enabled` is `false` in Helm `values.yaml`)**
+1.  Apply the Redis Deployment and Service manifests:
     ```bash
     kubectl apply -f deployment/local_k8s/dependencies/redis-deployment.yaml
     kubectl apply -f deployment/local_k8s/dependencies/redis-service.yaml
     ```
+2.  Wait for Redis to be ready (as described before).
 
-2.  **Wait for Redis to be ready**:
-    ```bash
-    kubectl get deployment redis -w
-    kubectl get pods -l app=redis -w
-    # Wait until the redis pod is Running and Ready (1/1).
-    ```
+**Option B: Helm Subchart Deployment (if `redis.enabled` is `true` in Helm `values.yaml`)**
+   If you set `redis.enabled: true` in your `charts/rag-system/values.yaml` (or via `--set redis.enabled=true`), Helm will deploy Redis when you install the `rag-system` chart.
+   The RAG Query Service configuration in `values.yaml` is set up to point to the Helm-deployed Redis service name (`{{ .Release.Name }}-redis-master`).
+   No separate `kubectl apply` is needed for Redis in this case.
 
-3.  **(Optional) Test Redis Connection (from a pod with redis-cli or locally if port-forwarded)**:
-    ```bash
-    # Port-forward Redis for local cli access
-    # kubectl port-forward service/redis-service 6379:6379
-    # Then, in another terminal (if you have redis-cli installed):
-    # redis-cli -h localhost -p 6379 ping
-    # Expected: PONG
-    ```
-
-### 4.5. (Future) Deploy PostgreSQL & MongoDB
-Placeholder for when these are needed. You would typically use Helm charts.
+### 4.5. (Future) Deploy PostgreSQL & MongoDB - *Helm Subcharts Recommended*
+Placeholder for when these are needed. You would typically use Helm charts, potentially as subcharts to the main `rag-system` chart in a similar way to Qdrant and Redis.
 
 ## 5. Configure Services to Find Dependencies
 
@@ -710,3 +697,16 @@ Remove local registry (if used):
 ```bash
 docker stop kind-registry && docker rm kind-registry
 ```
+
+## 11. Running Automated Tests Locally
+
+After setting up your environment and installing dependencies from `requirements.txt` (ideally in a virtual environment), you can run the automated tests:
+
+```bash
+# From the root of the repository
+pytest
+# Or to run tests in a specific directory:
+# pytest tests/unit/
+# pytest tests/integration/
+```
+Ensure any services required by integration tests (like a local RAG Query Service for its health check test) are running, or mock them appropriately if running tests in complete isolation. The unit tests for `RedisCacheManager` use mocking and do not require a live Redis server.

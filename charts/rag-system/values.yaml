@@ -8,22 +8,22 @@ image:
   repository: your-dockerhub-username/rag-system # TODO: Update with your image repository
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest" # Or specific version like "iter7"
+  tag: "latest" # Or specific version like "iter9"
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
 # -- Service configurations for each microservice --
-# These will mirror the structure of ConfigMaps but be sourced from values.yaml
 
 internalApiGateway:
-  name: internal-api-gateway
-  port: 8000
+  enabled: true
+  name: internal-api-gateway # Used for component naming
+  containerPort: 8000
   service:
-    type: NodePort # Or LoadBalancer for cloud, ClusterIP if behind another Ingress
-    port: 80 # External port for the service
-    # nodePort: 30080 # Optional: specify if type is NodePort and you want a fixed port
+    type: NodePort
+    port: 80
+    # nodePort: 30080
   resources:
     requests:
       cpu: "100m"
@@ -31,21 +31,21 @@ internalApiGateway:
     limits:
       cpu: "500m"
       memory: "512Mi"
-  # Configurable upstream service URLs
-  # These will be used to populate the internal-api-gateway-config ConfigMap
   config:
+    # Note: The context for include is '.', so .Release.Name works.
+    # For component names, we pass the specific component's values to the helper.
     RAG_QUERY_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.ragQueryService \"context\" .) }}:{{ .Values.ragQueryService.service.port }}"
     DOC_PROCESSING_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.docProcessingService \"context\" .) }}:{{ .Values.docProcessingService.service.port }}"
-    API_GATEWAY_PORT: {{ .Values.internalApiGateway.containerPort | quote }} # Ensure this matches the containerPort
+    API_GATEWAY_PORT: {{ .Values.internalApiGateway.containerPort | quote }}
     LOGGING_LEVEL: "INFO"
-    VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # IMPORTANT: Change for actual deployments. Use Helm secrets for production.
+    VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # TODO: Change for actual deployments.
 
 ragQueryService:
-  enabled: true # Allows disabling this sub-component if needed
+  enabled: true
   name: rag-query-service
-  port: 8001
+  containerPort: 8001
   service:
-    type: ClusterIP # Typically internal only
+    type: ClusterIP
     port: 8001
   resources:
     requests:
@@ -54,95 +54,91 @@ ragQueryService:
     limits:
       cpu: "1000m"
       memory: "2Gi"
-    # gpu:
-    #   enabled: false # Set to true if nodes have GPUs and image supports it
-    #   count: 1
-    #   type: "nvidia.com/gpu" # Or other GPU resource type
   config:
-    QDRANT_HOST: "qdrant-service" # Assumes Qdrant is deployed with this service name
-    QDRANT_PORT: "6333"
+    RAG_SERVICE_PORT: "8001"
+    # Conditional QDRANT_HOST and REDIS_HOST based on whether subcharts are enabled
+    QDRANT_HOST: {{ .Values.qdrant.enabled | ternary (printf "%s-qdrant" .Release.Name) "qdrant-service" }}
+    QDRANT_PORT: "6333" # Usually fixed by Qdrant chart or manual service
     QDRANT_COLLECTION_NAME: "documents"
-    # QDRANT_API_KEY: "" # Keep sensitive data out of default values.yaml; use secrets or --set
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
-    MODEL_DEVICE: "cpu" # Change to "cuda" if GPU is enabled and available
-    OLLAMA_API_URL: "http://ollama-service:11434" # Assumes Ollama is deployed with this service name
+    MODEL_DEVICE: "cpu"
+    OLLAMA_API_URL: "http://ollama-service:11434" # Assuming ollama-service is deployed manually or by another chart
     LLM_MODEL_NAME: "llama2"
     LOGGING_LEVEL: "INFO"
-    # Redis Caching Config
-    REDIS_HOST: "redis-service" # Assumes Redis is deployed with this service name
-    REDIS_PORT: "6379"
-    REDIS_DB_RAG_CACHE: "1" # Specific DB for RAG cache
+    REDIS_HOST: {{ .Values.redis.enabled | ternary (printf "%s-redis-master" .Release.Name) "redis-service" }} # Bitnami Redis chart often names master service like this
+    REDIS_PORT: "6379" # Usually fixed by Redis chart or manual service
+    REDIS_DB_RAG_CACHE: "1"
     SEARCH_RESULTS_CACHE_TTL_SECONDS: "3600"
     LLM_ANSWER_CACHE_TTL_SECONDS: "86400"
 
-
 docProcessingService:
+  enabled: true
   name: doc-processing-service
-  port: 8002
+  containerPort: 8002
   service:
     type: ClusterIP
     port: 8002
   resources:
     requests:
       cpu: "100m"
-      memory: "256Mi" # Increased slightly as it now loads embedding model
+      memory: "256Mi"
     limits:
-      cpu: "1000m" # Can burst for embedding
-      memory: "1Gi" # Increased
+      cpu: "1000m"
+      memory: "1Gi"
   config:
-    QDRANT_HOST: "qdrant-service"
+    DOC_PROCESSING_SERVICE_PORT: "8002"
+    QDRANT_HOST: {{ .Values.qdrant.enabled | ternary (printf "%s-qdrant" .Release.Name) "qdrant-service" }}
     QDRANT_PORT: "6333"
     QDRANT_COLLECTION_NAME: "documents"
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
     LOGGING_LEVEL: "INFO"
 
-# --- Common Application Settings (example, can be expanded) ---
-# These could be mounted into all pods if needed via a shared ConfigMap or individual env vars
+# --- Subchart configurations for Dependencies ---
+
+# Qdrant subchart values (from https://github.com/qdrant/qdrant-helm)
+# Users can override these by passing their own values file or using --set qdrant.xxx
+qdrant:
+  enabled: false # Set to true to deploy Qdrant as a subchart
+  # Example overrides for the Qdrant subchart:
+  # replicaCount: 1
+  # persistence:
+  #   enabled: false # For local dev, true for production
+  #   size: 5Gi
+  # service:
+  #   type: ClusterIP
+  #   httpPort: 6333
+  #   grpcPort: 6334
+  #   name: qdrant # This name might be overridden by Helm's fullname templating for subcharts
+                 # The QDRANT_HOST above uses {{ .Release.Name }}-qdrant for predictability.
+
+# Redis subchart values (from Bitnami Redis chart: https://github.com/bitnami/charts/tree/main/bitnami/redis)
+# Users can override these.
+redis:
+  enabled: false # Set to true to deploy Redis as a subchart
+  # Example overrides for the Bitnami Redis subchart:
+  # architecture: standalone # or "replication" or "cluster"
+  # auth:
+  #   enabled: false # Set to true and provide a password for production
+  #   # password: "yourredispassword"
+  # master:
+  #   persistence:
+  #     enabled: false # For local dev cache, true if persistence needed
+  #     size: 2Gi
+  # replica:
+  #   replicaCount: 0 # For standalone
+
+# --- Common Application Settings (can be expanded) ---
 commonConfig:
   ENVIRONMENT_NAME: "development"
-  LOG_FORMAT: "json" # Example
 
-# Service Account (optional, if needed for K8s API access or specific permissions)
 serviceAccount:
-  # Specifies whether a service account should be created
   create: true
-  # Annotations to add to the service account
   annotations: {}
-  # The name of the service account to use.
-  # If not set and create is true, a name is generated using the fullname template
   name: ""
 
-# Pod Security Context (example, adjust as needed)
 podSecurityContext: {}
-  # fsGroup: 2000
-
-# Container Security Context (example, adjust as needed)
 securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
-
-# Ingress (optional, if you want to expose gateway via Ingress controller)
-ingress:
-  enabled: false
-  # className: ""
-  # annotations: {}
-  #   # kubernetes.io/ingress.class: nginx
-  #   # kubernetes.io/tls-acme: "true"
-  # hosts:
-  #   - host: chart-example.local
-  #     paths:
-  #       - path: /
-  #         pathType: ImplementationSpecific
-  # tls: []
-  #  - secretName: chart-example-tls
-  #    hosts:
-  #      - chart-example.local
-
-# Dependencies (Qdrant, Ollama, RabbitMQ, Redis) are NOT managed by this chart in Iteration 7.
-# They are expected to be deployed separately as per DEPLOY_LOCAL_TEST_GUIDE.md.
-# In future iterations, they could be added as subcharts or managed externally.
+# ingress:
+#   enabled: false
+#   ... (rest of ingress config as before) ...

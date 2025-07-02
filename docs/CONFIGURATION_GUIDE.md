@@ -20,21 +20,40 @@ This section will list common environment variables. As services are developed o
     *   `POSTGRES_HOST`: Hostname of the PostgreSQL server.
     *   `POSTGRES_PORT`: Port of the PostgreSQL server (default: `5432`).
     *   `POSTGRES_USER`: Username for PostgreSQL connection.
-    *   `POSTGRES_PASSWORD`: Password for PostgreSQL connection.
+    *   `POSTGRES_PASSWORD`: Password for PostgreSQL connection (use Secrets for production).
     *   `POSTGRES_DB`: Database name to connect to.
+    *   **Note on pgVector**: If using the pgVector extension with PostgreSQL for vector similarity search, ensure the `vector` extension is enabled in your database (`CREATE EXTENSION IF NOT EXISTS vector;`). The `PostgresConnector` can be used to store and query vector data. Refer to `Scripts/storage/postgres_connector.py` for example query patterns.
 *   **MongoDB**:
     *   `MONGO_HOST`: Hostname of the MongoDB server or replica set.
     *   `MONGO_PORT`: Port of the MongoDB server (default: `27017`).
     *   `MONGO_USER`: Username for MongoDB connection (if authentication is enabled).
-    *   `MONGO_PASSWORD`: Password for MongoDB connection.
+    *   `MONGO_PASSWORD`: Password for MongoDB connection (use Secrets for production).
     *   `MONGO_DB`: Database name to use.
     *   `MONGO_CONNECTION_STRING`: Alternative to host/port/user/pass, provides the full MongoDB connection URI. If set, it typically overrides individual parameters.
+*   **MySQL**:
+    *   `MYSQL_HOST`: Hostname of the MySQL server.
+    *   `MYSQL_PORT`: Port of the MySQL server (default: `3306`).
+    *   `MYSQL_USER`: Username for MySQL connection.
+    *   `MYSQL_PASSWORD`: Password for MySQL connection (use Secrets for production).
+    *   `MYSQL_DB`: Database name to connect to.
+    *   `MYSQL_CHARSET`: Character set for the MySQL connection (default: `utf8mb4`).
+    *   `MYSQL_MIN_CONN`: Minimum connections for the pool (default: `1`).
+    *   `MYSQL_MAX_CONN`: Maximum connections for the pool (default: `5`).
+*   **SQLite**:
+    *   `SQLITE_DB_PATH`: Filesystem path to the SQLite database file (e.g., `data/application.db`). Default is `data/sqlite.db`.
 *   **Qdrant**:
     *   `QDRANT_URL`: URL of the Qdrant instance (e.g., `http://qdrant-service:6333`).
     *   `QDRANT_HOST`: Hostname of the Qdrant server (alternative to `QDRANT_URL` if only host is needed).
     *   `QDRANT_PORT`: Port of the Qdrant server (alternative to `QDRANT_URL`, default: `6333` for HTTP, `6334` for gRPC).
     *   `QDRANT_API_KEY`: API key for Qdrant Cloud or secured instances.
     *   `QDRANT_GRPC_PORT`: gRPC port for Qdrant (if using gRPC client).
+    *   `QDRANT_COLLECTION_NAME`: Default collection name for Qdrant operations.
+*   **ChromaDB**:
+    *   `CHROMA_HOST`: Hostname for ChromaDB HTTP client (e.g., `localhost`). If not set and `CHROMA_PATH` is not set, an in-memory client is used.
+    *   `CHROMA_PORT`: Port for ChromaDB HTTP client (e.g., `8000`).
+    *   `CHROMA_PATH`: Filesystem path for ChromaDB persistent client (e.g., `data/chroma_db`). If set and host/port are not, a persistent client is used.
+    *   `CHROMA_COLLECTION_NAME`: Default collection name for ChromaDB operations (default: `default_collection`).
+    *   `CHROMA_EMBEDDING_FUNCTION`: Name of the SentenceTransformer model Chroma should use (e.g., `all-MiniLM-L6-v2`, or `default` for Chroma's default).
 
 ### Service-Specific Configurations
 

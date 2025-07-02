@@ -205,3 +205,38 @@ if __name__ == '__main__':
         logger.error("Failed to create 'test_items' table.")
 
     pg_connector.close_pool()
+
+    # --- pgVector Example Notes ---
+    # To use pgVector with this connector:
+    # 1. Ensure the pgVector extension is installed in your PostgreSQL database.
+    #    Connect to your DB (e.g., via psql) and run: CREATE EXTENSION IF NOT EXISTS vector;
+    #
+    # 2. Create a table with a vector column:
+    #    CREATE TABLE items_with_vectors (
+    #        id SERIAL PRIMARY KEY,
+    #        name TEXT,
+    #        embedding VECTOR(3) -- Example: 3 dimensions, adjust to your embedding model's output size
+    #    );
+    #
+    # 3. Insert data with vector embeddings:
+    #    (Assuming 'embedding_vector' is a Python list/tuple like [0.1, 0.2, 0.3])
+    #    insert_vector_query = "INSERT INTO items_with_vectors (name, embedding) VALUES (%s, %s);"
+    #    pg_connector.execute_query(insert_vector_query, ("My Item", embedding_vector), commit=True)
+    #    Note: psycopg2 automatically adapts Python lists/tuples to PostgreSQL array syntax, which pgVector understands for input.
+    #
+    # 4. Perform similarity search:
+    #    (Assuming 'query_vector' is a Python list/tuple for the query embedding)
+    #    similarity_search_query = """
+    #    SELECT name, embedding <-> %s AS distance
+    #    FROM items_with_vectors
+    #    ORDER BY embedding <-> %s
+    #    LIMIT 5;
+    #    """
+    #    results = pg_connector.execute_query(similarity_search_query, (query_vector, query_vector), fetch_all=True)
+    #    if results:
+    #        for row in results:
+    #            print(f"Name: {row['name']}, Distance: {row['distance']}") # Assuming DictCursor
+    #
+    # Indexing for performance (example using HNSW for cosine distance):
+    #    CREATE INDEX ON items_with_vectors USING hnsw (embedding vector_cosine_ops);
+    # Consult pgVector documentation for appropriate index types based on your vector size and distance metric.

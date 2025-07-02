@@ -22,6 +22,8 @@ qdrant-client==1.14.2
 weaviate-client==3.25.2
 pinecone-client==2.2.2
 pymilvus==2.3.2
+chromadb-client==0.4.24 # For ChromaDB integration
+faiss-cpu==1.7.4 # For FAISS CPU-based indexing (use faiss-gpu if GPU is available and preferred)
 
 # LLM integration
 anthropic==0.8.1
@@ -83,7 +85,8 @@ tqdm==4.67.1
 numpy==1.24.3
 scipy==1.15.3
 watchdog==6.0.0
-snowflake-connector-python==3.5.0 # Moved here as it's a DB connector/utility
+snowflake-connector-python==3.5.0
+PyMySQL==1.1.0 # For MySQL Connector
 
 # Development
 # pytest is also under Testing dependencies, using version 8.1.1 from there.

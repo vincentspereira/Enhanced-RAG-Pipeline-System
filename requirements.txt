@@ -22,6 +22,8 @@ qdrant-client==1.14.2
 weaviate-client==3.25.2
 pinecone-client==2.2.2
 pymilvus==2.3.2
+chromadb-client==0.4.24 # For ChromaDB integration
+faiss-cpu==1.7.4 # For FAISS CPU-based indexing (use faiss-gpu if GPU is available and preferred)
 
 # LLM integration
 anthropic==0.8.1
@@ -41,9 +43,11 @@ pyvis==0.3.2
 boto3==1.33.13
 azure-storage-blob==12.19.0
 google-cloud-storage==2.14.0
+google-cloud-bigquery==3.15.0 # For BigQuery integration
 
 # Document processing
-PyPDF2==3.0.1
+PyPDF2==3.0.1 # Retain for other potential PDF tasks or if preferred by other old scripts
+PyMuPDF==1.23.26 # For PDF text extraction in Document Processing Service (fitz)
 python-docx==1.1.2
 python-pptx==1.0.2
 openpyxl==3.1.5
@@ -70,6 +74,10 @@ rank_bm25
 gensim
 pyspellchecker
 textstat
+polars==0.20.10 # For Polars DataFrame integration
+duckdb==0.10.0 # For DuckDB in-process OLAP
+pika==1.3.2 # For RabbitMQ integration
+dask[dataframe]==2024.1.0 # For Dask parallel processing, includes dask and pandas
 
 # Monitoring, Caching & Search Features
 prometheus-client
@@ -83,7 +91,8 @@ tqdm==4.67.1
 numpy==1.24.3
 scipy==1.15.3
 watchdog==6.0.0
-snowflake-connector-python==3.5.0 # Moved here as it's a DB connector/utility
+snowflake-connector-python==3.5.0
+PyMySQL==1.1.0 # For MySQL Connector
 
 # Development
 # pytest is also under Testing dependencies, using version 8.1.1 from there.

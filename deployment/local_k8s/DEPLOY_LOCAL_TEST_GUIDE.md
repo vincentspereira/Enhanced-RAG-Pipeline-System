@@ -193,10 +193,40 @@ Ollama is used by the RAG Query Service to generate answers.
     ```
     You can check available models with `kubectl exec -it $OLLAMA_POD -- ollama list`.
 
-### 4.3. (Future) Deploy PostgreSQL & MongoDB
+### 4.3. Deploy RabbitMQ
+
+RabbitMQ can be used for asynchronous task processing between services.
+
+1.  **Apply the RabbitMQ Deployment and Service manifests**:
+    ```bash
+    kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-deployment.yaml
+    kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-service.yaml
+    ```
+
+2.  **Wait for RabbitMQ to be ready**:
+    ```bash
+    kubectl get deployment rabbitmq -w
+    kubectl get pods -l app=rabbitmq -w
+    # Wait until the rabbitmq pod is Running and Ready (1/1).
+    ```
+
+3.  **(Optional) Access RabbitMQ Management UI**:
+    The service `rabbitmq-service` exposes port `15672` for the management UI. To access it locally:
+    ```bash
+    # Find the RabbitMQ pod name
+    RABBITMQ_POD=$(kubectl get pods -l app=rabbitmq -o jsonpath='{.items[0].metadata.name}')
+    echo "RabbitMQ pod: $RABBITMQ_POD"
+
+    # Port-forward to the management UI
+    echo "Port-forwarding RabbitMQ management UI. Access at http://localhost:15672. Press Ctrl+C to stop."
+    kubectl port-forward $RABBITMQ_POD 15672:15672
+    ```
+    Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
+
+### 4.4. (Future) Deploy PostgreSQL & MongoDB
 Placeholder for when these are needed. You would typically use Helm charts.
 
-## 5. Configure Services to Find Ollama
+## 5. Configure Services to Find Dependencies
 
 The `rag-query-service` needs to know the URL for the Ollama API. This is defined in its ConfigMap.
 Ensure `deployment/local_k8s/rag-query-service-configmap.yaml` has:
@@ -347,7 +377,7 @@ This test verifies the basic document processing and RAG query flow.
     ```bash
     curl -X POST "<gateway-url>/document/process_document" \
       -F "file=@testdoc.txt" \
-      -F "metadata_json={\"source\":\"e2e_test\", \"doc_title\":\"Jules AI Agent\"}"
+      -F "metadata_json={\"source\":\"e2e_txt_test\", \"doc_title\":\"Jules AI Agent TXT\"}"
     ```
     Expected response should indicate successful indexing, e.g.:
     ```json
@@ -356,8 +386,8 @@ This test verifies the basic document processing and RAG query flow.
       "filename": "testdoc.txt",
       "qdrant_id": "some-uuid-or-custom-id", // The ID used in Qdrant
       "metadata_processed": {
-        "source": "e2e_test", // Or "testdoc.txt" if source wasn't in metadata_json
-        "doc_title": "Jules AI Agent",
+        "source": "e2e_txt_test",
+        "doc_title": "Jules AI Agent TXT",
         "original_filename": "testdoc.txt",
         "_internal_id": "some-uuid-or-custom-id"
       },
@@ -366,9 +396,20 @@ This test verifies the basic document processing and RAG query flow.
     ```
     Check `doc-processing-service` logs for confirmation of embedding and Qdrant upsert.
 
-3.  **Wait a few seconds for indexing to settle (optional, usually fast).**
+3.  **Create a simple PDF file `testdoc.pdf`**:
+    You can create one using any word processor and saving as PDF, or using a simple online converter with the text: "The quick brown fox jumps over the lazy dog."
 
-4.  **Query the RAG Service for content from the processed document (via Gateway)**:
+4.  **Process `testdoc.pdf` using the Document Processing Service (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/document/process_document" \
+      -F "file=@testdoc.pdf" \
+      -F "metadata_json={\"source\":\"e2e_pdf_test\", \"doc_title\":\"Lazy Fox PDF\"}"
+    ```
+    Expected response should indicate successful indexing. Check `doc-processing-service` logs.
+
+5.  **Wait a few seconds for indexing to settle.**
+
+6.  **Query the RAG Service for content from the processed TXT document (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
@@ -380,22 +421,98 @@ This test verifies the basic document processing and RAG query flow.
       "query": "What does Jules the AI agent enjoy?",
       "search_results": [
         {
-          "id": "some-uuid-or-custom-id", // Should match the qdrant_id from step 2
-          "score": 0.8, // Example score, will vary
+          // ... details of testdoc.txt ...
           "text": "Jules the AI agent enjoys software engineering and helping users.",
           "metadata": {
-            "source": "e2e_test", // Or "testdoc.txt"
-            "doc_title": "Jules AI Agent",
-            "original_filename": "testdoc.txt",
-            "_internal_id": "some-uuid-or-custom-id"
+            "source": "e2e_txt_test",
+            // ... other metadata ...
           }
         }
       ],
-      "answer": "Jules the AI agent enjoys software engineering and helping users.", // Or similar LLM-generated answer
-      "llm_model_used": "llama2" // Or your configured model
+      "answer": "Jules the AI agent enjoys software engineering and helping users.",
+      "llm_model_used": "llama2"
     }
     ```
-    If the `search_results` are empty or the answer is generic, check Qdrant data (e.g. using Qdrant dashboard if accessible, or by adding a debug endpoint to one of the services to inspect Qdrant). Ensure the document was indexed correctly and the query is relevant.
+
+7.  **Query the RAG Service for content from the processed PDF document (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/rag/query" \
+      -H "Content-Type: application/json" \
+      -d '{"query": "What does the fox jump over?", "top_k": 1, "generate_answer": true}'
+    ```
+    Expected response (will vary):
+    ```json
+    {
+      "query": "What does the fox jump over?",
+      "search_results": [
+        {
+          // ... details of testdoc.pdf text content ...
+          "text": "The quick brown fox jumps over the lazy dog.", // Or similar extracted text
+          "metadata": {
+            "source": "e2e_pdf_test",
+            // ... other metadata ...
+          }
+        }
+      ],
+      "answer": "The fox jumps over the lazy dog.", // Or similar
+      "llm_model_used": "llama2"
+    }
+    ```
+    If `search_results` are empty or the answer is generic for PDF, check `doc-processing-service` logs for PDF extraction success and Qdrant indexing. Also, ensure the PDF content was simple and extractable.
+
+### 8.7. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
+This test verifies basic RabbitMQ connectivity and message flow. It requires running the example scripts manually.
+
+1.  **Ensure RabbitMQ is deployed and running in Kubernetes (see Section 4.3).**
+2.  **Set Environment Variables for RabbitMQ connection (if not using defaults or if running scripts outside a K8s-aware environment that resolves `rabbitmq-service`):**
+    Open two terminals. In both, navigate to the root of your cloned repository.
+    If RabbitMQ is running in K8s and you want to connect from your local machine directly (not from within a K8s pod), you'll need to port-forward the AMQP port:
+    ```bash
+    # In a separate terminal, keep this running:
+    kubectl port-forward service/rabbitmq-service 5672:5672
+    ```
+    Then, in your script terminals, the default `RABBITMQ_HOST=localhost` and `RABBITMQ_PORT=5672` (with user/password `user`/`password` as per example) should work.
+    If your RabbitMQ setup uses different credentials or is accessed differently, set these:
+    ```bash
+    # export RABBITMQ_HOST="localhost" # If port-forwarding
+    # export RABBITMQ_PORT="5672"
+    # export RABBITMQ_USER="user"
+    # export RABBITMQ_PASSWORD="password"
+    ```
+
+3.  **Run the Consumer Script:**
+    In the first terminal:
+    ```bash
+    python Scripts/utils/rabbitmq_consumer_example.py
+    ```
+    The consumer will start and log "[*] Waiting for messages...".
+
+4.  **Run the Producer Script:**
+    In the second terminal:
+    ```bash
+    python Scripts/utils/rabbitmq_producer_example.py
+    ```
+    The producer will send a message (or multiple, if you modify it) and log what it sent.
+
+5.  **Observe Consumer Output:**
+    Switch back to the first terminal (consumer). You should see logs indicating that the message was received, processed, and acknowledged. Example:
+    ```
+    INFO:pika.adapters.blocking_connection:Successfully connected to 127.0.0.1:5672/_
+    INFO:__main__:[*] Waiting for messages in queue 'example_task_queue'. To exit press CTRL+C
+    INFO:__main__:[x] Received message (delivery_tag: 1)
+    INFO:__main__:    Properties: <BasicProperties(['delivery_mode=2'])>
+    INFO:__main__:    Body (JSON): {
+      "task_id": "task_167...",
+      "payload": "Process this item.",
+      "timestamp": "...",
+      "priority": "high"
+    }
+    INFO:__main__:[x] Done processing message (delivery_tag: 1). Acknowledged.
+    ```
+
+6.  **Stop the Consumer:** Press `CTRL+C` in the consumer terminal. Stop the port-forwarding if you started it.
+
+This test confirms that the RabbitMQ instance is operational and that the example Pika scripts can connect, publish, and consume messages.
 
 ## 9. Troubleshooting
 

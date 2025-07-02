@@ -75,7 +75,7 @@ ragQueryService:
     QDRANT_COLLECTION_NAME: "documents"
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
-    OLLAMA_API_URL: "http://{{ .Values.ollama.enabled | ternary (printf "%s-ollama" .Release.Name) .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}"
+    OLLAMA_API_URL: "http://{{ .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}" # Connect to user-specified Ollama service
     LLM_MODEL_NAME: "llama2"
     LOGGING_LEVEL: "INFO"
     REDIS_HOST: {{ .Values.redis.enabled | ternary (printf "%s-redis-master" .Release.Name) "redis-service" }} # Bitnami Redis chart often names master service like this
@@ -141,14 +141,30 @@ redis:
   # replica:
   #   replicaCount: 0 # For standalone
 
-# Ollama - Configuration for connecting to an externally deployed Ollama instance,
-# or for a future subchart.
+# Ollama Configuration
+# This section configures how the RAG Query Service connects to an Ollama instance.
+# IMPORTANT: This chart DOES NOT deploy Ollama itself by default. You are expected to have
+# an Ollama instance running and accessible within your Kubernetes cluster.
+# The `ollama.service.name` should be the Kubernetes service name of your Ollama deployment.
 ollama:
-  enabled: false # Set to true if you have an Ollama subchart reference in Chart.yaml and want Helm to deploy it.
-                 # For now, this mostly controls service URL templating if deployed externally.
+  # enabled: false # This flag would be used if Ollama were a subchart dependency. Currently not the case.
+  # If you were to add Ollama as a subchart (e.g., a community chart) in Chart.yaml,
+  # you would set 'enabled: true' here and configure its subchart values below.
+  # For example:
+  # communityChartValues:
+  #   image: ollama/ollama:latest
+  #   persistence:
+  #     enabled: true # etc.
+
+  # Configuration for connecting to YOUR deployed Ollama service:
   service:
-    name: ollama-service # Expected K8s service name for Ollama (if deployed externally or by this chart)
-    port: 11434
+    name: "ollama-service" # REQUIRED: Update this to the K8s service name of your Ollama deployment.
+                           # Example: If you deployed Ollama via its own manifest/chart and its service is named "my-ollama", set this to "my-ollama".
+    port: 11434            # Standard Ollama API port.
+  # The RAG Query Service will construct its OLLAMA_API_URL using:
+  # http://{{ .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}
+  # So, ensure these values correctly point to your running Ollama service.
+
   # If ollama were a subchart, you'd have its specific values here:
   # image:
   #   repository: ollama/ollama

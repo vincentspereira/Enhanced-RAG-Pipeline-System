@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-service # This name will be used by other services to connect
+  namespace: default # Or your target namespace
+  labels:
+    app: rabbitmq
+spec:
+  type: ClusterIP # Expose within the cluster for services
+  # To expose management UI externally for local testing, you could use NodePort
+  # or port-forwarding. For NodePort, you'd add another port definition.
+  # Example for NodePort on management UI:
+  # type: NodePort
+  ports:
+  - name: amqp
+    port: 5672       # Port other services in the cluster use to connect
+    targetPort: 5672 # Port on the RabbitMQ container
+    protocol: TCP
+  - name: http-mgmt
+    port: 15672      # Port for management UI within the cluster
+    targetPort: 15672
+    protocol: TCP
+    # If type: NodePort, you could add:
+    # nodePort: 30672 # Example NodePort for management UI
+  selector:
+    app: rabbitmq # Matches labels of the RabbitMQ pods from the Deployment

@@ -54,6 +54,24 @@ This section will list common environment variables. As services are developed o
     *   `CHROMA_PATH`: Filesystem path for ChromaDB persistent client (e.g., `data/chroma_db`). If set and host/port are not, a persistent client is used.
     *   `CHROMA_COLLECTION_NAME`: Default collection name for ChromaDB operations (default: `default_collection`).
     *   `CHROMA_EMBEDDING_FUNCTION`: Name of the SentenceTransformer model Chroma should use (e.g., `all-MiniLM-L6-v2`, or `default` for Chroma's default).
+*   **Snowflake**:
+    *   `SNOWFLAKE_ACCOUNT`: Your Snowflake account identifier (e.g., `youraccount.region.cloudprovider`).
+    *   `SNOWFLAKE_USER`: Snowflake username.
+    *   `SNOWFLAKE_PASSWORD`: Snowflake password (use Secrets for production).
+    *   `SNOWFLAKE_WAREHOUSE`: Snowflake warehouse to use for queries.
+    *   `SNOWFLAKE_DATABASE`: Snowflake database to connect to.
+    *   `SNOWFLAKE_SCHEMA`: Snowflake schema to use within the database.
+    *   `SNOWFLAKE_ROLE`: (Optional) Snowflake role to assume for the session.
+*   **Google BigQuery**:
+    *   `BIGQUERY_PROJECT_ID`: Your Google Cloud Project ID where BigQuery is enabled.
+    *   `GOOGLE_APPLICATION_CREDENTIALS`: (Optional) Path to your Google Cloud service account JSON key file. If not set, Application Default Credentials (ADC) will be used (e.g., from `gcloud auth application-default login` or environment-provided credentials in GCP).
+    *   `BIGQUERY_LOCATION`: (Optional) Default geographic location for BigQuery jobs (e.g., `US`, `EU`, `asia-northeast1`). Defaults to `US` in the connector if not set.
+*   **RabbitMQ**:
+    *   `RABBITMQ_HOST`: Hostname of the RabbitMQ server (e.g., `localhost` or `rabbitmq-service` in K8s).
+    *   `RABBITMQ_PORT`: Port for AMQP protocol (default: `5672`).
+    *   `RABBITMQ_USER`: Username for RabbitMQ connection (e.g., `user`).
+    *   `RABBITMQ_PASSWORD`: Password for RabbitMQ connection (e.g., `password`, use Secrets for production).
+    *   `RABBITMQ_MANAGEMENT_PORT`: Port for RabbitMQ Management UI (default: `15672`), if applicable for accessing UI.
 
 ### Service-Specific Configurations
 

@@ -193,10 +193,40 @@ Ollama is used by the RAG Query Service to generate answers.
     ```
     You can check available models with `kubectl exec -it $OLLAMA_POD -- ollama list`.
 
-### 4.3. (Future) Deploy PostgreSQL & MongoDB
+### 4.3. Deploy RabbitMQ
+
+RabbitMQ can be used for asynchronous task processing between services.
+
+1.  **Apply the RabbitMQ Deployment and Service manifests**:
+    ```bash
+    kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-deployment.yaml
+    kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-service.yaml
+    ```
+
+2.  **Wait for RabbitMQ to be ready**:
+    ```bash
+    kubectl get deployment rabbitmq -w
+    kubectl get pods -l app=rabbitmq -w
+    # Wait until the rabbitmq pod is Running and Ready (1/1).
+    ```
+
+3.  **(Optional) Access RabbitMQ Management UI**:
+    The service `rabbitmq-service` exposes port `15672` for the management UI. To access it locally:
+    ```bash
+    # Find the RabbitMQ pod name
+    RABBITMQ_POD=$(kubectl get pods -l app=rabbitmq -o jsonpath='{.items[0].metadata.name}')
+    echo "RabbitMQ pod: $RABBITMQ_POD"
+
+    # Port-forward to the management UI
+    echo "Port-forwarding RabbitMQ management UI. Access at http://localhost:15672. Press Ctrl+C to stop."
+    kubectl port-forward $RABBITMQ_POD 15672:15672
+    ```
+    Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
+
+### 4.4. (Future) Deploy PostgreSQL & MongoDB
 Placeholder for when these are needed. You would typically use Helm charts.
 
-## 5. Configure Services to Find Ollama
+## 5. Configure Services to Find Dependencies
 
 The `rag-query-service` needs to know the URL for the Ollama API. This is defined in its ConfigMap.
 Ensure `deployment/local_k8s/rag-query-service-configmap.yaml` has:
@@ -396,6 +426,60 @@ This test verifies the basic document processing and RAG query flow.
     }
     ```
     If the `search_results` are empty or the answer is generic, check Qdrant data (e.g. using Qdrant dashboard if accessible, or by adding a debug endpoint to one of the services to inspect Qdrant). Ensure the document was indexed correctly and the query is relevant.
+
+### 8.7. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
+This test verifies basic RabbitMQ connectivity and message flow. It requires running the example scripts manually.
+
+1.  **Ensure RabbitMQ is deployed and running in Kubernetes (see Section 4.3).**
+2.  **Set Environment Variables for RabbitMQ connection (if not using defaults or if running scripts outside a K8s-aware environment that resolves `rabbitmq-service`):**
+    Open two terminals. In both, navigate to the root of your cloned repository.
+    If RabbitMQ is running in K8s and you want to connect from your local machine directly (not from within a K8s pod), you'll need to port-forward the AMQP port:
+    ```bash
+    # In a separate terminal, keep this running:
+    kubectl port-forward service/rabbitmq-service 5672:5672
+    ```
+    Then, in your script terminals, the default `RABBITMQ_HOST=localhost` and `RABBITMQ_PORT=5672` (with user/password `user`/`password` as per example) should work.
+    If your RabbitMQ setup uses different credentials or is accessed differently, set these:
+    ```bash
+    # export RABBITMQ_HOST="localhost" # If port-forwarding
+    # export RABBITMQ_PORT="5672"
+    # export RABBITMQ_USER="user"
+    # export RABBITMQ_PASSWORD="password"
+    ```
+
+3.  **Run the Consumer Script:**
+    In the first terminal:
+    ```bash
+    python Scripts/utils/rabbitmq_consumer_example.py
+    ```
+    The consumer will start and log "[*] Waiting for messages...".
+
+4.  **Run the Producer Script:**
+    In the second terminal:
+    ```bash
+    python Scripts/utils/rabbitmq_producer_example.py
+    ```
+    The producer will send a message (or multiple, if you modify it) and log what it sent.
+
+5.  **Observe Consumer Output:**
+    Switch back to the first terminal (consumer). You should see logs indicating that the message was received, processed, and acknowledged. Example:
+    ```
+    INFO:pika.adapters.blocking_connection:Successfully connected to 127.0.0.1:5672/_
+    INFO:__main__:[*] Waiting for messages in queue 'example_task_queue'. To exit press CTRL+C
+    INFO:__main__:[x] Received message (delivery_tag: 1)
+    INFO:__main__:    Properties: <BasicProperties(['delivery_mode=2'])>
+    INFO:__main__:    Body (JSON): {
+      "task_id": "task_167...",
+      "payload": "Process this item.",
+      "timestamp": "...",
+      "priority": "high"
+    }
+    INFO:__main__:[x] Done processing message (delivery_tag: 1). Acknowledged.
+    ```
+
+6.  **Stop the Consumer:** Press `CTRL+C` in the consumer terminal. Stop the port-forwarding if you started it.
+
+This test confirms that the RabbitMQ instance is operational and that the example Pika scripts can connect, publish, and consume messages.
 
 ## 9. Troubleshooting
 

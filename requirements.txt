@@ -80,7 +80,8 @@ pika==1.3.2 # For RabbitMQ integration
 dask[dataframe]==2024.1.0 # For Dask parallel processing, includes dask and pandas
 
 # Monitoring, Caching & Search Features
-prometheus-client
+prometheus-client # General Prometheus client library
+prometheus-fastapi-instrumentator==6.1.0 # For FastAPI specific metrics exporter
 elasticsearch
 redis==5.0.1 # For Redis caching (updated/specific version)
 diskcache

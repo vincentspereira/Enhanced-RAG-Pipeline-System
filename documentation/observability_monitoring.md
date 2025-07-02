@@ -100,9 +100,17 @@ These are critical for defining and measuring service reliability.
             *   Availability SLO: 99.9% of requests in a month return a non-5xx status code.
             *   Latency SLO: 99% of requests served in < 500ms.
         *   **RAG Query Service (`/query` endpoint)**:
-            *   Availability SLO: 99.5% of requests in a month return a non-5xx status code.
-            *   Latency SLO (semantic search + LLM answer): 95% of queries answered in < 5 seconds.
-            *   Search Relevance SLO (harder to measure automatically): e.g., X% of top results deemed relevant by human evaluation (requires feedback loop).
+        *   The service now exposes a `/metrics` endpoint via `prometheus-fastapi-instrumentator`.
+        *   **Default Metrics Exposed**: HTTP request count, latency histogram, error counts, requests in progress.
+        *   **Custom Metrics Exposed**:
+            *   `rag_cache_hits_total`: Counter for cache hits (labels: `cache_type` e.g., "search_results", "llm_answer").
+            *   `rag_cache_misses_total`: Counter for cache misses (labels: `cache_type`).
+            *   `rag_qdrant_query_latency_seconds`: Histogram for Qdrant query latencies (labels: `query_type` e.g., "semantic", "keyword_filter").
+            *   `rag_ollama_llm_latency_seconds`: Histogram for Ollama LLM call latencies (labels: `model_name`).
+        *   **Example SLOs**:
+            *   Availability SLO: 99.5% of `/query` requests in a month return a non-5xx status code.
+            *   Latency SLO (semantic search + LLM answer): 95% of `/query` requests answered in < 5 seconds.
+            *   Cache Hit Ratio (Target): > 50% for LLM answers over a day (example SLI to aim for).
         *   **Document Processing Service (`/process_document` endpoint)**:
             *   Availability SLO: 99.5% of requests return a non-5xx status code.
             *   Processing Success Rate SLO: 99% of supported documents successfully indexed.

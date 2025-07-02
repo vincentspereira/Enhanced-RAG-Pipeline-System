@@ -1,8 +1,10 @@
 import httpx
 import logging
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Security
+from fastapi.security.api_key import APIKeyHeader, APIKey
 from fastapi.responses import JSONResponse, StreamingResponse
 import os
+from typing import List, Optional
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -22,12 +24,52 @@ except ImportError:
             return os.getenv(env_var_name, default)
 
 # --- Service URLs ---
-# These will be the K8s service names when deployed, e.g., http://rag-query-service:8001
 RAG_QUERY_SERVICE_URL = get_config_value("RAG_QUERY_SERVICE_URL", default="http://localhost:8001")
 DOC_PROCESSING_SERVICE_URL = get_config_value("DOC_PROCESSING_SERVICE_URL", default="http://localhost:8002")
-# Add other future service URLs here
+
+# --- API Key Configuration ---
+API_KEY_NAME = "X-API-Key" # Standard header name for API keys
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# Load valid API keys from environment variable (comma-separated string)
+# For production, these should ideally be managed via Kubernetes Secrets and injected securely.
+VALID_API_KEYS_CSV = get_config_value("VALID_API_KEYS_CSV", default="") # e.g., "key1,key2,anothersecretkey"
+VALID_API_KEYS: List[str] = [key.strip() for key in VALID_API_KEYS_CSV.split(',') if key.strip()]
+
+if not VALID_API_KEYS:
+    logger.warning("No VALID_API_KEYS_CSV configured for the API Gateway. All requests will be allowed (or fail if auth is strictly enforced by a dependency). This is insecure for protected environments.")
+else:
+    logger.info(f"API Gateway initialized with {len(VALID_API_KEYS)} valid API key(s).")
+
+async def get_api_key_dependency(key: Optional[str] = Security(api_key_header)):
+    """
+    Dependency to validate the API key.
+    """
+    if not VALID_API_KEYS: # If no keys are configured, effectively bypass auth (not recommended for sensitive routes)
+        logger.warning("API key validation bypassed as no valid keys are configured.")
+        return None # Or raise an error if auth is mandatory
+
+    if not key:
+        logger.warning("API key missing from request.")
+        raise HTTPException(
+            status_code=403, # Forbidden
+            detail="Not authenticated: API key required."
+        )
+    if key not in VALID_API_KEYS:
+        logger.warning(f"Invalid API key provided: '{key[:10]}...'") # Log only a prefix for security
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized: Invalid API key."
+        )
+    logger.debug(f"Valid API key received: '{key[:10]}...'")
+    return key
+
 
 app = FastAPI(title="Internal API Gateway")
+# To protect all routes by default, you can add dependencies=[Security(get_api_key_dependency)] to FastAPI instance:
+# app = FastAPI(title="Internal API Gateway", dependencies=[Security(get_api_key_dependency)])
+# However, for this iteration, we'll apply it per route group or individually if needed.
+# For now, let's protect the main routing functions.
 
 # HTTP client that will be used to make requests to other services
 # It's good practice to reuse the client instance.
@@ -101,30 +143,24 @@ async def _forward_request(service_url: str, request: Request):
 
 
 # --- RAG Query Service Routes ---
-# Example: any path starting with /rag will be forwarded to RAG_QUERY_SERVICE_URL
-# Note: FastAPI matches routes in order. More specific routes should come before general ones.
 @app.api_route("/rag/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def route_to_rag_query_service(request: Request, path: str):
-    logger.info(f"Routing to RAG Query Service: /rag/{path}")
+async def route_to_rag_query_service(request: Request, path: str, api_key: APIKey = Security(get_api_key_dependency)):
+    logger.info(f"Routing to RAG Query Service: /rag/{path} (auth valid for key prefix: {str(api_key)[:10]}...)")
     return await _forward_request(RAG_QUERY_SERVICE_URL, request)
 
 # --- Document Processing Service Routes ---
 @app.api_route("/document/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def route_to_doc_processing_service(request: Request, path: str):
-    # Modify the path if the service expects paths without the /document prefix
-    # For now, it forwards /document/actual_path to DOC_PROCESSING_SERVICE_URL/document/actual_path
-    # If DOC_PROCESSING_SERVICE_URL should receive /actual_path, then path modification is needed here.
-    # Example: if request.url.path is /document/upload, and DOC_PROCESSING_SERVICE_URL is http://docproc,
-    # this will call http://docproc/document/upload.
-    # If you want http://docproc/upload, you need to adjust the target_url in _forward_request or here.
-    # For simplicity, we'll assume the service handles the full path for now or specific routes are defined.
-    logger.info(f"Routing to Document Processing Service: /document/{path}")
+async def route_to_doc_processing_service(request: Request, path: str, api_key: APIKey = Security(get_api_key_dependency)):
+    logger.info(f"Routing to Document Processing Service: /document/{path} (auth valid for key prefix: {str(api_key)[:10]}...)")
     return await _forward_request(DOC_PROCESSING_SERVICE_URL, request)
 
 
-# --- Health Check for the Gateway itself ---
+# --- Health Check for the Gateway itself (typically does not require API key) ---
 @app.get("/gateway_health", tags=["Gateway Health"])
 async def health_check():
+    # Note: If VALID_API_KEYS is empty, get_api_key_dependency returns None and doesn't raise error.
+    # If keys are configured, this health check would also need a key if the dependency was app-wide.
+    # Since it's route-specific for now, this health check remains open.
     return JSONResponse({"status": "healthy", "service": "Internal API Gateway"})
 
 

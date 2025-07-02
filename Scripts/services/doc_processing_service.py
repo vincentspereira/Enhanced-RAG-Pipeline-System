@@ -241,10 +241,17 @@ async def process_document_endpoint(
                 ])
                 keywords = list(set(word for word in words if word not in stop_words and len(word) > 2 and not word.isdigit()))
                 payload_for_qdrant["metadata"]["keywords"] = keywords[:150] # Store up to 150 keywords
-                logger.info(f"Generated {len(keywords)} basic keywords for document {doc_id_for_qdrant}.")
+                logger.info(f"Generated {len(keywords)} unique basic keywords for document {doc_id_for_qdrant}.")
+
+                # Calculate Term Frequencies for these keywords
+                term_frequencies = {kw: words.count(kw) for kw in keywords}
+                payload_for_qdrant["metadata"]["term_frequencies"] = term_frequencies
+                logger.info(f"Calculated term frequencies for document {doc_id_for_qdrant}.")
+
             except Exception as kw_e:
-                logger.warning(f"Could not generate keywords for document {doc_id_for_qdrant}: {kw_e}")
+                logger.warning(f"Could not generate keywords or term frequencies for document {doc_id_for_qdrant}: {kw_e}")
                 payload_for_qdrant["metadata"]["keywords"] = []
+                payload_for_qdrant["metadata"]["term_frequencies"] = {}
 
             points_to_upsert = [
                 qdrant_models.PointStruct(

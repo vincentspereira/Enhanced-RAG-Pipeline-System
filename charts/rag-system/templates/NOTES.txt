@@ -46,6 +46,9 @@ Services:
 - This chart deploys the core RAG application services. Dependencies like Qdrant, Ollama, RabbitMQ, and Redis are NOT deployed by this chart and must be set up separately.
 - Ensure the configuration in your `values.yaml` (or overridden values) correctly points to these external dependencies.
 - The default image is `{{ .Values.image.repository }}:{{ .Values.image.tag }}`. You may need to update this to your own image.
+- **API Key Authentication**: The Internal API Gateway is now protected by API Key. You must include an `X-API-Key` header with a valid key in your requests to the gateway.
+  Default example keys (from `values.yaml`): `{{ .Values.internalApiGateway.config.VALID_API_KEYS_CSV }}`
+  **IMPORTANT**: These default keys are for local testing only. Change them for any real deployment and manage them securely (e.g., via Helm secrets or a secure values file).
 
 For detailed testing instructions, refer to the `DEPLOY_LOCAL_TEST_GUIDE.md` in the repository.
 You can check the status of the deployment using:

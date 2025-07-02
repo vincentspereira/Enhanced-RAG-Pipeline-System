@@ -147,19 +147,15 @@ spec:
 ```
 Apply it:
 ```bash
-kubectl apply -f deployment/local_k8s/dependencies/qdrant-deployment.yaml
+kubectl apply -f deployment/local_k8s/dependencies/qdrant-deployment.yaml # Ensure service name is qdrant-service
+kubectl apply -f deployment/local_k8s/dependencies/qdrant-service.yaml # If you created a separate service file
 ```
 
-**Option B: Using Helm (More Flexible)**
-```bash
-helm repo add qdrant https://qdrant.github.io/qdrant-helm
-helm install qdrant-db qdrant/qdrant \
-  --set service.name=qdrant-service \
-  --set service.httpPort=6333 \
-  --set service.grpcPort=6334 \
-  --set persistence.enabled=false # For local testing, or true with storageClass for persistence
-```
-Ensure the service name matches `QDRANT_HOST` in `rag-query-service-configmap.yaml` (which is `qdrant-service`).
+**Option B: Helm Subchart Deployment (if `qdrant.enabled` is `true` in Helm `values.yaml`)**
+   If you set `qdrant.enabled: true` in your `charts/rag-system/values.yaml` (or via `--set qdrant.enabled=true`), Helm will deploy Qdrant when you install the `rag-system` chart.
+   The RAG Query Service and Document Processing Service configurations in `values.yaml` are set up to point to the Helm-deployed Qdrant service name (`{{ .Release.Name }}-qdrant`).
+   No separate `kubectl apply` or `helm install qdrant/...` is needed for Qdrant in this case.
+   You might need to run `helm dependency update ./charts/rag-system` once before installing if you've just added the dependency to `Chart.yaml`.
 
 ### 4.2. Deploy Ollama
 
@@ -223,34 +219,25 @@ RabbitMQ can be used for asynchronous task processing between services.
     ```
     Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
 
-### 4.4. Deploy Redis (for Caching)
+### 4.4. Deploy Redis (for Caching) - *Now potentially managed by Helm*
 
-Redis is used by the RAG Query Service for caching search results and LLM answers.
+Redis is used by the RAG Query Service for caching.
 
-1.  **Apply the Redis Deployment and Service manifests**:
+**Option A: Manual Deployment (if `redis.enabled` is `false` in Helm `values.yaml`)**
+1.  Apply the Redis Deployment and Service manifests:
     ```bash
     kubectl apply -f deployment/local_k8s/dependencies/redis-deployment.yaml
     kubectl apply -f deployment/local_k8s/dependencies/redis-service.yaml
     ```
+2.  Wait for Redis to be ready (as described before).
 
-2.  **Wait for Redis to be ready**:
-    ```bash
-    kubectl get deployment redis -w
-    kubectl get pods -l app=redis -w
-    # Wait until the redis pod is Running and Ready (1/1).
-    ```
+**Option B: Helm Subchart Deployment (if `redis.enabled` is `true` in Helm `values.yaml`)**
+   If you set `redis.enabled: true` in your `charts/rag-system/values.yaml` (or via `--set redis.enabled=true`), Helm will deploy Redis when you install the `rag-system` chart.
+   The RAG Query Service configuration in `values.yaml` is set up to point to the Helm-deployed Redis service name (`{{ .Release.Name }}-redis-master`).
+   No separate `kubectl apply` is needed for Redis in this case.
 
-3.  **(Optional) Test Redis Connection (from a pod with redis-cli or locally if port-forwarded)**:
-    ```bash
-    # Port-forward Redis for local cli access
-    # kubectl port-forward service/redis-service 6379:6379
-    # Then, in another terminal (if you have redis-cli installed):
-    # redis-cli -h localhost -p 6379 ping
-    # Expected: PONG
-    ```
-
-### 4.5. (Future) Deploy PostgreSQL & MongoDB
-Placeholder for when these are needed. You would typically use Helm charts.
+### 4.5. (Future) Deploy PostgreSQL & MongoDB - *Helm Subcharts Recommended*
+Placeholder for when these are needed. You would typically use Helm charts, potentially as subcharts to the main `rag-system` chart in a similar way to Qdrant and Redis.
 
 ## 5. Configure Services to Find Dependencies
 
@@ -375,32 +362,40 @@ If using Kind or Docker Desktop, it's usually `http://localhost:<NodePort>`.
 ## 8. Smoke Test Plan & Execution
 
 Perform these tests using `curl` or Postman. Replace `<gateway-url>` with the URL found in the previous step (e.g., `http://localhost:30080`).
+You will also need a valid API key. The default example keys in the ConfigMap/values.yaml are `changeme-local-key1` or `local-raw-key1`. Use one of these or one you configured.
+
+**Set your API Key as an environment variable for convenience:**
+```bash
+export MY_API_KEY="changeme-local-key1" # Or your configured key
+```
 
 ### 8.1. Gateway Health Check
+(This endpoint is typically not protected by API key for basic liveness/readiness)
 ```bash
 curl <gateway-url>/gateway_health
 ```
 Expected: `{"status":"healthy","service":"Internal API Gateway"}`
 
-### 8.2. RAG Query Service Health (via Gateway)
+### 8.2. RAG Query Service Health (via Gateway - Protected)
 This assumes the RAG Query Service's `/health` endpoint is at its root. The gateway forwards `/rag/health`.
 ```bash
-curl <gateway-url>/rag/health
+curl -H "X-API-Key: $MY_API_KEY" <gateway-url>/rag/health
 ```
 Expected: `{"status":"healthy", ...}` or `{"status":"degraded", ...}` if components within RAG service aren't fully ready. Check RAG service logs.
 
-### 8.3. Document Processing Service Health (via Gateway)
+### 8.3. Document Processing Service Health (via Gateway - Protected)
 ```bash
-curl <gateway-url>/document/health
+curl -H "X-API-Key: $MY_API_KEY" <gateway-url>/document/health
 ```
-Expected: `{"status":"healthy","service_type":"stub"}`
+Expected: `{"status":"healthy", ...}` (details depend on service state)
 
-### 8.4. Test Document Processing Stub (via Gateway)
+### 8.4. Test Document Processing Service (via Gateway - Protected)
 Create a dummy text file, e.g., `sample.txt` with "Hello world".
 ```bash
 curl -X POST "<gateway-url>/document/process_document" \
+  -H "X-API-Key: $MY_API_KEY" \
   -F "file=@sample.txt" \
-  -F "metadata_json={\"source\":\"local_test\", \"user\":\"tester\"}"
+  -F "metadata_json={\"source\":\"local_test_auth\", \"user\":\"tester_auth\"}"
 ```
 Expected:
 ```json
@@ -423,6 +418,7 @@ This test checks if the service can retrieve from Qdrant (even if empty) and gen
 ```bash
 curl -X POST "<gateway-url>/rag/query" \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $MY_API_KEY" \
   -d '{"query": "What is the capital of France?", "top_k": 1, "generate_answer": true}'
 ```
 Expected (if Qdrant is up, collection exists (even if empty), and Ollama with model is running):
@@ -448,8 +444,9 @@ This test verifies the basic document processing and RAG query flow.
 2.  **Process `testdoc.txt` using the Document Processing Service (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/document/process_document" \
+      -H "X-API-Key: $MY_API_KEY" \
       -F "file=@testdoc.txt" \
-      -F "metadata_json={\"source\":\"e2e_txt_test\", \"doc_title\":\"Jules AI Agent TXT\"}"
+      -F "metadata_json={\"source\":\"e2e_txt_test_auth\", \"doc_title\":\"Jules AI Agent TXT Auth\"}"
     ```
     Expected response should indicate successful indexing, e.g.:
     ```json
@@ -474,8 +471,9 @@ This test verifies the basic document processing and RAG query flow.
 4.  **Process `testdoc.pdf` using the Document Processing Service (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/document/process_document" \
+      -H "X-API-Key: $MY_API_KEY" \
       -F "file=@testdoc.pdf" \
-      -F "metadata_json={\"source\":\"e2e_pdf_test\", \"doc_title\":\"Lazy Fox PDF\"}"
+      -F "metadata_json={\"source\":\"e2e_pdf_test_auth\", \"doc_title\":\"Lazy Fox PDF Auth\"}"
     ```
     Expected response should indicate successful indexing. Check `doc-processing-service` logs.
 
@@ -485,8 +483,9 @@ This test verifies the basic document processing and RAG query flow.
 6.  **Process `testdoc.docx` using the Document Processing Service (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/document/process_document" \
+      -H "X-API-Key: $MY_API_KEY" \
       -F "file=@testdoc.docx" \
-      -F "metadata_json={\"source\":\"e2e_docx_test\", \"doc_title\":\"Jules DOCX Test\"}"
+      -F "metadata_json={\"source\":\"e2e_docx_test_auth\", \"doc_title\":\"Jules DOCX Test Auth\"}"
     ```
     Expected response should indicate successful indexing. Check `doc-processing-service` logs.
 
@@ -496,6 +495,7 @@ This test verifies the basic document processing and RAG query flow.
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
+      -H "X-API-Key: $MY_API_KEY" \
       -d '{"query": "What does Jules the AI agent enjoy?", "top_k": 1, "generate_answer": true}'
     ```
     Expected response (will vary based on LLM and exact context):
@@ -521,6 +521,7 @@ This test verifies the basic document processing and RAG query flow.
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
+      -H "X-API-Key: $MY_API_KEY" \
       -d '{"query": "What does the fox jump over?", "top_k": 1, "generate_answer": true}'
     ```
     Expected response (will vary):
@@ -547,6 +548,7 @@ This test verifies the basic document processing and RAG query flow.
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
+      -H "X-API-Key: $MY_API_KEY" \
       -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true}'
     ```
     The first time you run this, it will fetch from Qdrant and Ollama. Subsequent identical requests (within the cache TTLs, default 1hr for search results, 24hr for LLM answers) should be faster and potentially indicate `cached_response: true` (or parts of it were cached).
@@ -558,6 +560,7 @@ This test verifies the basic document processing and RAG query flow.
         ```bash
         curl -X POST "<gateway-url>/rag/query" \
           -H "Content-Type: application/json" \
+          -H "X-API-Key: $MY_API_KEY" \
           -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true, "force_no_cache": true}'
         ```
     Expected response (will vary):
@@ -572,7 +575,31 @@ This test verifies the basic document processing and RAG query flow.
     ```
     Check logs if results are not as expected.
 
-### 8.7. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
+### 8.7. Check RAG Query Service Metrics (Conceptual)
+After running some queries through the RAG Query Service (as in step 8.6), you can conceptually check its `/metrics` endpoint.
+If you have Prometheus deployed and scraping this service (which is beyond this local setup guide for now), you would query Prometheus.
+Locally, you could temporarily port-forward to the RAG Query Service to view its metrics endpoint:
+
+1.  **Find a RAG Query Service pod name**:
+    ```bash
+    kubectl get pods -l app.kubernetes.io/name={{ .Release.Name }}-rag-query-service # If deployed via Helm
+    # OR
+    kubectl get pods -l app=rag-query-service # If deployed via raw manifests
+    # Pick one pod name, e.g., my-rag-instance-rag-query-service-xxxxxxxxx-yyyyy
+    ```
+2.  **Port-forward to the pod**:
+    ```bash
+    # Replace <pod-name> with the actual pod name and 8001 with its containerPort
+    # kubectl port-forward <pod-name> 8001:8001
+    ```
+3.  **Access metrics in a new terminal**:
+    ```bash
+    # curl http://localhost:8001/metrics
+    ```
+    You should see a text-based output of Prometheus metrics, including default FastAPI metrics and the custom ones like `rag_cache_hits_total`, `rag_qdrant_query_latency_seconds_bucket`, etc.
+4.  Stop the port-forward when done.
+
+### 8.8. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
 This test verifies basic RabbitMQ connectivity and message flow. It requires running the example scripts manually.
 
 1.  **Ensure RabbitMQ is deployed and running in Kubernetes (see Section 4.3).**
@@ -670,3 +697,16 @@ Remove local registry (if used):
 ```bash
 docker stop kind-registry && docker rm kind-registry
 ```
+
+## 11. Running Automated Tests Locally
+
+After setting up your environment and installing dependencies from `requirements.txt` (ideally in a virtual environment), you can run the automated tests:
+
+```bash
+# From the root of the repository
+pytest
+# Or to run tests in a specific directory:
+# pytest tests/unit/
+# pytest tests/integration/
+```
+Ensure any services required by integration tests (like a local RAG Query Service for its health check test) are running, or mock them appropriately if running tests in complete isolation. The unit tests for `RedisCacheManager` use mocking and do not require a live Redis server.

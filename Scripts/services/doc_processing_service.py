@@ -11,7 +11,8 @@ import torch # For device selection
 import uuid # For generating document IDs
 import fitz # PyMuPDF
 from docx import Document as DocxDocument # For reading .docx files
-import io # For reading file stream into docx Document
+from pptx import Presentation # For reading .pptx files
+import io # For reading file stream
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -182,15 +183,40 @@ async def process_document_endpoint(
             except Exception as e:
                 logger.error(f"Error processing DOCX file {filename}: {e}", exc_info=True)
                 raise HTTPException(status_code=400, detail=f"Could not process DOCX file: {str(e)}")
+        elif filename.lower().endswith(".pptx"):
+            try:
+                pptx_file_stream = io.BytesIO(content_bytes)
+                presentation = Presentation(pptx_file_stream)
+                text_parts = []
+                for slide in presentation.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text_frame") and shape.text_frame:
+                            for paragraph in shape.text_frame.paragraphs:
+                                for run in paragraph.runs:
+                                    text_parts.append(run.text)
+                        elif hasattr(shape, "text") and shape.text: # For shapes with direct text property
+                             text_parts.append(shape.text)
+                    # Extract text from slide notes if present
+                    if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+                        text_parts.append(slide.notes_slide.notes_text_frame.text)
+
+                text_to_embed = "\n".join(filter(None, text_parts)) # Filter out empty strings
+                if not text_to_embed.strip():
+                    logger.warning(f"PPTX file '{filename}' contained no extractable text.")
+                else:
+                    logger.info(f"File '{filename}' (.pptx) text extracted successfully (length: {len(text_to_embed)}).")
+            except Exception as e:
+                logger.error(f"Error processing PPTX file {filename}: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail=f"Could not process PPTX file: {str(e)}")
         else:
-            logger.warning(f"Received file '{filename}' is not a .txt, .pdf, or .docx file. This iteration only supports these for content processing.")
+            logger.warning(f"Received file '{filename}' is not a .txt, .pdf, .docx, or .pptx file. This iteration only supports these for content processing.")
             # Metadata will still be parsed and returned, but no indexing will occur if text_to_embed is None.
 
     elif document_content:
         text_to_embed = document_content
         logger.info(f"Text content received (length: {len(text_to_embed)}).")
     else:
-        raise HTTPException(status_code=400, detail="Either a '.txt', '.pdf', '.docx' file or 'document_content' must be provided for processing.")
+        raise HTTPException(status_code=400, detail="Either a '.txt', '.pdf', '.docx', '.pptx' file or 'document_content' must be provided for processing.")
 
     parsed_metadata = {}
     try:
@@ -283,11 +309,11 @@ async def process_document_endpoint(
     else:
         # This case handles:
         # This case handles:
-        # 1. Non .txt/.pdf/.docx files (text_to_embed remains None)
-        # 2. .pdf/.docx files that yielded no text (text_to_embed is empty or whitespace)
+        # 1. Non .txt/.pdf/.docx/.pptx files (text_to_embed remains None)
+        # 2. .pdf/.docx/.pptx files that yielded no text (text_to_embed is empty or whitespace)
         # 3. Direct document_content that was empty or whitespace
         status_message = "Document metadata received. "
-        supported_types = [".txt", ".pdf", ".docx"]
+        supported_types = [".txt", ".pdf", ".docx", ".pptx"]
         file_type_supported = False
         if filename:
             for ext in supported_types:
@@ -299,10 +325,10 @@ async def process_document_endpoint(
             status_message += f"File '{filename}' type not supported for content extraction in this iteration. Supported: {', '.join(supported_types)}."
         elif text_to_embed is not None and not text_to_embed.strip(): # Content was extracted/provided but is empty
              status_message += "No processable text content found in the document for indexing."
-        elif text_to_embed is None and filename and file_type_supported : # File was of supported type but extraction failed or yielded nothing earlier
+        elif text_to_embed is None and filename and file_type_supported : # File was of supported type but extraction failed/empty
              status_message += f"File '{filename}' was of a supported type but no text could be extracted or content was empty."
         elif text_to_embed is None and filename and not file_type_supported: # Explicitly state not supported
-             status_message += f"File '{filename}' type not supported for content extraction."
+             status_message += f"File '{filename}' type not supported for content extraction. Supported: {', '.join(supported_types)}."
         else: # Only metadata_json was provided, or document_content was None/empty
             status_message += "No text content provided or extracted for indexing."
 

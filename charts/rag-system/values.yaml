@@ -38,7 +38,20 @@ internalApiGateway:
     DOC_PROCESSING_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.docProcessingService \"context\" .) }}:{{ .Values.docProcessingService.service.port }}"
     API_GATEWAY_PORT: {{ .Values.internalApiGateway.containerPort | quote }}
     LOGGING_LEVEL: "INFO"
-    VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # TODO: Change for actual deployments.
+    # VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # This will be sourced from a secret
+  apiKeys:
+    # If existingSecret.name is provided, the chart will use this existing Kubernetes Secret.
+    # The Secret must contain a key (specified by existingSecret.keyName) whose value is the comma-separated API keys.
+    existingSecret:
+      name: "" # e.g., "rag-gateway-apikeys-secret"
+      keyName: "api-keys-csv" # Key in the secret holding the CSV string of API keys
+
+    # If existingSecret.name is NOT provided AND createSecret is true,
+    # a new Secret will be created by the chart using the directValues.
+    # THIS IS INTENDED FOR LOCAL DEVELOPMENT/TESTING ONLY.
+    # For production, always use a pre-existing, securely managed Secret.
+    createSecret: false # Default to false, requiring an existing secret
+    directValues: "devkey1-from-values,devkey2-from-values" # Example if createSecret is true & no existingSecret
 
 ragQueryService:
   enabled: true
@@ -62,7 +75,7 @@ ragQueryService:
     QDRANT_COLLECTION_NAME: "documents"
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
-    OLLAMA_API_URL: "http://ollama-service:11434" # Assuming ollama-service is deployed manually or by another chart
+    OLLAMA_API_URL: "http://{{ .Values.ollama.enabled | ternary (printf "%s-ollama" .Release.Name) .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}"
     LLM_MODEL_NAME: "llama2"
     LOGGING_LEVEL: "INFO"
     REDIS_HOST: {{ .Values.redis.enabled | ternary (printf "%s-redis-master" .Release.Name) "redis-service" }} # Bitnami Redis chart often names master service like this
@@ -127,6 +140,40 @@ redis:
   #     size: 2Gi
   # replica:
   #   replicaCount: 0 # For standalone
+
+# Ollama - Configuration for connecting to an externally deployed Ollama instance,
+# or for a future subchart.
+ollama:
+  enabled: false # Set to true if you have an Ollama subchart reference in Chart.yaml and want Helm to deploy it.
+                 # For now, this mostly controls service URL templating if deployed externally.
+  service:
+    name: ollama-service # Expected K8s service name for Ollama (if deployed externally or by this chart)
+    port: 11434
+  # If ollama were a subchart, you'd have its specific values here:
+  # image:
+  #   repository: ollama/ollama
+  #   tag: latest
+  # persistence:
+  #   enabled: true
+  #   size: 20Gi # For models
+
+# RabbitMQ subchart values (from Bitnami RabbitMQ chart)
+rabbitmq:
+  enabled: false # Set to true to deploy RabbitMQ as a subchart
+  # Example overrides for the Bitnami RabbitMQ subchart:
+  # fullnameOverride: {{ printf "%s-rabbitmq" .Release.Name }} # Ensures predictable service name
+  auth:
+    username: "user" # Default user for local dev
+    password: "password" # Default password for local dev. CHANGE FOR PRODUCTION (use secrets).
+  persistence:
+    enabled: false # For local dev, true for production
+    # size: 5Gi
+  # service:
+  #   port: 5672
+  #   managementPort: 15672
+  #   name: rabbitmq # This might be overridden by fullnameOverride or release name.
+                  # The RABBITMQ_HOST below uses {{ .Release.Name }}-rabbitmq for predictability.
+
 
 # --- Common Application Settings (can be expanded) ---
 commonConfig:

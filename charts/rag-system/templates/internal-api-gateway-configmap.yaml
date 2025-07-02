@@ -1,0 +1,15 @@
+{{- if .Values.internalApiGateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.internalApiGateway "context" .) }}-config
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.internalApiGateway.name }}
+data:
+  RAG_QUERY_SERVICE_URL: {{ .Values.internalApiGateway.config.RAG_QUERY_SERVICE_URL | quote }}
+  DOC_PROCESSING_SERVICE_URL: {{ .Values.internalApiGateway.config.DOC_PROCESSING_SERVICE_URL | quote }}
+  API_GATEWAY_PORT: {{ .Values.internalApiGateway.config.API_GATEWAY_PORT | quote }}
+  LOGGING_LEVEL: {{ .Values.internalApiGateway.config.LOGGING_LEVEL | quote }}
+  # Add any other gateway-specific configurations from values.yaml here
+{{- end }}

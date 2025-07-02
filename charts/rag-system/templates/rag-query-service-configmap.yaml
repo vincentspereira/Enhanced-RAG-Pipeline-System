@@ -1,0 +1,27 @@
+{{- if .Values.ragQueryService.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.ragQueryService "context" .) }}-config
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.ragQueryService.name }}
+data:
+  RAG_SERVICE_PORT: {{ .Values.ragQueryService.config.RAG_SERVICE_PORT | quote }}
+  QDRANT_HOST: {{ .Values.ragQueryService.config.QDRANT_HOST | quote }}
+  QDRANT_PORT: {{ .Values.ragQueryService.config.QDRANT_PORT | quote }}
+  QDRANT_COLLECTION_NAME: {{ .Values.ragQueryService.config.QDRANT_COLLECTION_NAME | quote }}
+  {{- if .Values.ragQueryService.config.QDRANT_API_KEY }}
+  QDRANT_API_KEY: {{ .Values.ragQueryService.config.QDRANT_API_KEY | quote }}
+  {{- end }}
+  EMBEDDING_MODEL_NAME: {{ .Values.ragQueryService.config.EMBEDDING_MODEL_NAME | quote }}
+  MODEL_DEVICE: {{ .Values.ragQueryService.config.MODEL_DEVICE | quote }}
+  OLLAMA_API_URL: {{ .Values.ragQueryService.config.OLLAMA_API_URL | quote }}
+  LLM_MODEL_NAME: {{ .Values.ragQueryService.config.LLM_MODEL_NAME | quote }}
+  LOGGING_LEVEL: {{ .Values.ragQueryService.config.LOGGING_LEVEL | quote }}
+  REDIS_HOST: {{ .Values.ragQueryService.config.REDIS_HOST | quote }}
+  REDIS_PORT: {{ .Values.ragQueryService.config.REDIS_PORT | quote }}
+  REDIS_DB_RAG_CACHE: {{ .Values.ragQueryService.config.REDIS_DB_RAG_CACHE | quote }}
+  SEARCH_RESULTS_CACHE_TTL_SECONDS: {{ .Values.ragQueryService.config.SEARCH_RESULTS_CACHE_TTL_SECONDS | quote }}
+  LLM_ANSWER_CACHE_TTL_SECONDS: {{ .Values.ragQueryService.config.LLM_ANSWER_CACHE_TTL_SECONDS | quote }}
+{{- end }}

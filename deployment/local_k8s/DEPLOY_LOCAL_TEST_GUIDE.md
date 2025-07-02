@@ -265,9 +265,9 @@ data:
 ```
 This should already be set if you are applying the latest version of the ConfigMap.
 
-## 6. Deploy Application Services
+## 6. Deploy Application Services (Option A: Using Raw Kubernetes Manifests)
 
-Apply the Kubernetes manifests for the RAG system services:
+If you prefer to deploy using the individual YAML files (e.g., for deeper inspection or if not using Helm):
 
 ```bash
 kubectl apply -f deployment/local_k8s/internal-api-gateway-configmap.yaml
@@ -282,12 +282,58 @@ kubectl apply -f deployment/local_k8s/doc-processing-service-configmap.yaml
 kubectl apply -f deployment/local_k8s/doc-processing-service-deployment.yaml
 kubectl apply -f deployment/local_k8s/doc-processing-service-service.yaml
 ```
-Or apply all at once:
+Or apply all service-specific YAMLs at once (ensure dependencies like ConfigMaps are created before Deployments if not using `kubectl apply -k` or similar which handles ordering):
 ```bash
-kubectl apply -f deployment/local_k8s/
+# Apply ConfigMaps first
+kubectl apply -f deployment/local_k8s/internal-api-gateway-configmap.yaml
+kubectl apply -f deployment/local_k8s/rag-query-service-configmap.yaml
+kubectl apply -f deployment/local_k8s/doc-processing-service-configmap.yaml
+
+# Then Deployments and Services
+kubectl apply -f deployment/local_k8s/internal-api-gateway-deployment.yaml
+kubectl apply -f deployment/local_k8s/internal-api-gateway-service.yaml
+kubectl apply -f deployment/local_k8s/rag-query-service-deployment.yaml
+kubectl apply -f deployment/local_k8s/rag-query-service-service.yaml
+kubectl apply -f deployment/local_k8s/doc-processing-service-deployment.yaml
+kubectl apply -f deployment/local_k8s/doc-processing-service-service.yaml
 ```
 
-## 6. Verify Deployment
+## 6. Deploy Application Services (Option B: Using Helm Chart - Recommended)
+
+This is the recommended method for deploying the core RAG system services.
+
+1.  **Navigate to the repository root.**
+2.  **Update `charts/rag-system/values.yaml` (Important!):**
+    *   Open `charts/rag-system/values.yaml`.
+    *   Change `image.repository` to your actual Docker image repository (e.g., `yourdockerhubusername/rag-system` or `localhost:5000/rag-system` if using a local registry).
+    *   Change `image.tag` to the tag you used during the `docker build` step (e.g., `iter7-local` or your specific tag).
+    *   Review other default values (ports, resources, dependency service names like `QDRANT_HOST`, `OLLAMA_API_URL`, `REDIS_HOST`) and adjust if your dependency deployments use different names or your local K8s environment has specific needs.
+
+3.  **Install the Helm chart:**
+    Give your deployment a release name, e.g., `my-rag-instance`.
+    ```bash
+    helm install my-rag-instance ./charts/rag-system -f ./charts/rag-system/values.yaml --namespace default
+    # Or, if you want to override specific values without modifying values.yaml:
+    # helm install my-rag-instance ./charts/rag-system \
+    #   --set image.repository="yourdockerhubusername/rag-system" \
+    #   --set image.tag="your-tag" \
+    #   --namespace default
+    ```
+    The output will include `NOTES.txt` with information on how to access the services.
+
+4.  **To upgrade an existing Helm release:**
+    ```bash
+    helm upgrade my-rag-instance ./charts/rag-system -f ./charts/rag-system/values.yaml --namespace default
+    ```
+
+5.  **To uninstall a Helm release:**
+    ```bash
+    helm uninstall my-rag-instance --namespace default
+    ```
+
+**Note on Dependencies**: This Helm chart only deploys the core RAG application services. Dependencies like Qdrant, Ollama, RabbitMQ, and Redis must still be deployed separately (e.g., using `kubectl apply -f deployment/local_k8s/dependencies/`) as described in Section 4. Ensure they are running *before* installing the Helm chart.
+
+## 7. Verify Deployment
 
 Check the status of your pods, services, and deployments:
 

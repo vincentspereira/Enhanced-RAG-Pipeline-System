@@ -28,6 +28,22 @@ dependencies:
     condition: redis.enabled # Only install if redis.enabled is true in values.yaml
     # alias: redis-dependency # Optional alias
 
+  - name: rabbitmq
+    version: "12.0.5" # Check for latest stable/compatible Bitnami RabbitMQ chart version
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: rabbitmq.enabled
+    # alias: rabbitmq-dependency
+
+  # Ollama does not have a widely adopted official/stable general-purpose Helm chart as of common knowledge cut-off.
+  # If a good community chart is identified (e.g., from https://github.com/ollama-helm/ollama or similar),
+  # it could be added here. For now, we'll manage its configuration via values.yaml assuming external deployment,
+  # but a placeholder here shows intent.
+  # - name: ollama
+  #   version: "0.1.0" # Example version
+  #   repository: "oci://ghcr.io/ollama-helm/ollama-chart" # Example OCI registry if they publish one
+  #   condition: ollama.enabled
+  #   alias: ollama-dependency
+
 # Optional: Specify maintainers
 # maintainers:
 #   - name: YourName

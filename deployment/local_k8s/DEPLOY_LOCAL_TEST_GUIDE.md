@@ -153,11 +153,12 @@ kubectl apply -f deployment/local_k8s/dependencies/qdrant-service.yaml # If you 
 
 **Option B: Helm Subchart Deployment (if `qdrant.enabled` is `true` in Helm `values.yaml`)**
    If you set `qdrant.enabled: true` in your `charts/rag-system/values.yaml` (or via `--set qdrant.enabled=true`), Helm will deploy Qdrant when you install the `rag-system` chart.
-   The RAG Query Service and Document Processing Service configurations in `values.yaml` are set up to point to the Helm-deployed Qdrant service name (`{{ .Release.Name }}-qdrant`).
-   No separate `kubectl apply` or `helm install qdrant/...` is needed for Qdrant in this case.
-   You might need to run `helm dependency update ./charts/rag-system` once before installing if you've just added the dependency to `Chart.yaml`.
+   The RAG Query Service and Document Processing Service configurations in `values.yaml` are set up to point to the Helm-deployed Qdrant service name (e.g., `{{ .Release.Name }}-qdrant`).
+   No separate `kubectl apply` or `helm install qdrant/...` is needed for Qdrant if deploying via the parent chart.
+   **Action**: Before installing/upgrading the `rag-system` chart with `qdrant.enabled: true`, run:
+     `helm dependency build ./charts/rag-system` (or `helm dependency update ./charts/rag-system` if already built once).
 
-### 4.2. Deploy Ollama
+### 4.2. Deploy Ollama - *Now with Helm value placeholder*
 
 Ollama is used by the RAG Query Service to generate answers.
 
@@ -188,36 +189,26 @@ Ollama is used by the RAG Query Service to generate answers.
     # but ensure RAG_QUERY_SERVICE_LLM_MODEL_NAME is updated accordingly.
     ```
     You can check available models with `kubectl exec -it $OLLAMA_POD -- ollama list`.
+    **Note on Helm for Ollama**: The main `rag-system` chart's `values.yaml` has an `ollama.enabled` flag and configuration for `ollama.service.name` and `ollama.service.port`. If you find a suitable community Helm chart for Ollama, you could add it as a dependency in `Chart.yaml` similar to Qdrant/Redis, and then these values would configure how our application connects to the Helm-deployed Ollama. For now, manual deployment of Ollama (as above) is assumed if `ollama.enabled` is false (default).
 
-### 4.3. Deploy RabbitMQ
+### 4.3. Deploy RabbitMQ - *Now potentially managed by Helm*
 
 RabbitMQ can be used for asynchronous task processing between services.
 
-1.  **Apply the RabbitMQ Deployment and Service manifests**:
+**Option A: Manual Deployment (if `rabbitmq.enabled` is `false` in Helm `values.yaml`)**
+1.  Apply the RabbitMQ Deployment and Service manifests:
     ```bash
     kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-deployment.yaml
     kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-service.yaml
     ```
+2.  Wait for RabbitMQ to be ready and access Management UI as described previously.
 
-2.  **Wait for RabbitMQ to be ready**:
-    ```bash
-    kubectl get deployment rabbitmq -w
-    kubectl get pods -l app=rabbitmq -w
-    # Wait until the rabbitmq pod is Running and Ready (1/1).
-    ```
-
-3.  **(Optional) Access RabbitMQ Management UI**:
-    The service `rabbitmq-service` exposes port `15672` for the management UI. To access it locally:
-    ```bash
-    # Find the RabbitMQ pod name
-    RABBITMQ_POD=$(kubectl get pods -l app=rabbitmq -o jsonpath='{.items[0].metadata.name}')
-    echo "RabbitMQ pod: $RABBITMQ_POD"
-
-    # Port-forward to the management UI
-    echo "Port-forwarding RabbitMQ management UI. Access at http://localhost:15672. Press Ctrl+C to stop."
-    kubectl port-forward $RABBITMQ_POD 15672:15672
-    ```
-    Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
+**Option B: Helm Subchart Deployment (if `rabbitmq.enabled` is `true` in Helm `values.yaml`)**
+   If you set `rabbitmq.enabled: true` in your `charts/rag-system/values.yaml` (or via `--set rabbitmq.enabled=true`), Helm will deploy RabbitMQ (using the Bitnami chart) when you install/upgrade the `rag-system` chart.
+   The example producer/consumer scripts will need their `RABBITMQ_HOST` to point to the Helm-deployed service (e.g., `{{ .Release.Name }}-rabbitmq`).
+   **Action**: Before installing/upgrading the `rag-system` chart with `rabbitmq.enabled: true`, run:
+     `helm dependency build ./charts/rag-system` (or `helm dependency update ./charts/rag-system`).
+   You can customize RabbitMQ settings (like user/password, persistence) via the `rabbitmq:` section in `values.yaml`.
 
 ### 4.4. Deploy Redis (for Caching) - *Now potentially managed by Helm*
 

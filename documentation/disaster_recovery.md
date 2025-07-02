@@ -68,6 +68,40 @@ This document outlines the disaster recovery (DR) procedures and strategies for 
             4.  **Restore via API**: Use Qdrant's API to restore the collection from the snapshot file(s). (Refer to specific Qdrant version documentation for exact API endpoints and procedures, as this might involve uploading the snapshot through an API or placing it in a predefined recovery directory).
             5.  **Verify**: Check data integrity and search functionality.
 
+    *   **AI Models (Ollama)**:
+        *   **Context**: Ollama downloads and stores large language models locally, typically within its container's filesystem (e.g., `/root/.ollama` by default), which should be mapped to a PersistentVolume (PV) when deployed in Kubernetes (as done in `ollama-statefulset.yaml`).
+        *   **Backup Strategy**:
+            1.  **PersistentVolume Snapshots**: The primary method is to take regular snapshots of the PV where Ollama stores its models. This should be done using the storage provider's snapshot capabilities (e.g., AWS EBS snapshots, GCE Persistent Disk snapshots, Ceph RBD snapshots, etc.).
+            2.  **Model File Backup (Alternative/Complementary)**: If direct PV snapshotting is complex or for added safety, a script could periodically list models (`ollama list`) and then copy the model blobs from Ollama's data directory (inside the pod, from its PV) to an external backup storage (e.g., S3). This is more complex to manage consistently.
+        *   **Frequency**: Depends on how often new models are pulled or fine-tuned (if applicable). If models are relatively static after initial setup, less frequent backups (e.g., weekly or after major model changes) might suffice for the model files themselves.
+        *   **Storage**: Backups (PV snapshots or model files) should be stored durably and securely, ideally in a different region.
+        *   **Restoration Strategy**:
+            1.  **Provision New Ollama Instance with PV**: Ensure a new Ollama instance is set up with a PV.
+            2.  **Restore PV from Snapshot**: Restore the PV from the chosen snapshot.
+            3.  **Start Ollama**: Ollama should then recognize the models present on its restored volume.
+            4.  **(If using file backup)**: Copy model files back to the new Ollama instance's data directory on its PV, then restart Ollama. It should rescan and register the models.
+            5.  **Verification**: List models (`ollama list`) and test inference with a key model.
+
+    *   **Message Queue (RabbitMQ)**:
+        *   **Context**: If RabbitMQ is used with durable queues and persistent messages, its data (message store, configurations, user metadata) is stored on a PersistentVolume (if persistence is enabled in its Helm chart, e.g., Bitnami's RabbitMQ chart allows this).
+        *   **Backup Strategy**:
+            1.  **PersistentVolume Snapshots**: If RabbitMQ persistence is enabled and uses PVs, take regular snapshots of these PVs using the storage provider's tools. This is the most straightforward way to back up the entire state, including messages in durable queues.
+            2.  **RabbitMQ Definitions Export**: RabbitMQ's management plugin allows exporting definitions (users, vhosts, queues, exchanges, policies, etc.) as a JSON file. This should be done regularly and stored externally. This backs up the *structure and configuration* but not the messages themselves.
+                *   Can be automated via `rabbitmqadmin` CLI or HTTP API calls.
+            3.  **Message Backup (Application-Level or Shovel/Federation - Advanced)**: For critical messages that cannot be lost and where PV snapshots might have limitations (e.g., RPO too high), consider:
+                *   Application-level backup: Store critical messages in a separate durable database before or after queuing.
+                *   RabbitMQ Shovel or Federation plugins to replicate messages to another RabbitMQ cluster or a different message system in another location (more of a high-availability/DR replication strategy than simple backup).
+        *   **Frequency**:
+            *   PV Snapshots: Daily or based on RPO for message data.
+            *   Definitions Export: Daily or after any configuration change.
+        *   **Storage**: Store PV snapshots and definition JSON files securely and durably externally.
+        *   **Restoration Strategy**:
+            1.  **Provision New RabbitMQ Instance**: With PVs if message persistence is key.
+            2.  **Restore PVs from Snapshot**: If PV snapshots were taken.
+            3.  **Start RabbitMQ**.
+            4.  **Import Definitions**: If restoring to a fresh instance or if definitions are suspect, import the last known good definitions JSON via the management UI or `rabbitmqadmin`.
+            5.  **Verification**: Check vhosts, queues, exchanges, user permissions. Test message publishing and consumption.
+
 *   **Infrastructure Backup:**
     *   [Backup of IaC scripts (Terraform, Ansible)]
     *   [Backup of Kubernetes cluster state (etcd backups)]

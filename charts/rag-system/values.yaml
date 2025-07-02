@@ -62,7 +62,7 @@ ragQueryService:
     QDRANT_COLLECTION_NAME: "documents"
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
-    OLLAMA_API_URL: "http://ollama-service:11434" # Assuming ollama-service is deployed manually or by another chart
+    OLLAMA_API_URL: "http://{{ .Values.ollama.enabled | ternary (printf "%s-ollama" .Release.Name) .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}"
     LLM_MODEL_NAME: "llama2"
     LOGGING_LEVEL: "INFO"
     REDIS_HOST: {{ .Values.redis.enabled | ternary (printf "%s-redis-master" .Release.Name) "redis-service" }} # Bitnami Redis chart often names master service like this
@@ -127,6 +127,40 @@ redis:
   #     size: 2Gi
   # replica:
   #   replicaCount: 0 # For standalone
+
+# Ollama - Configuration for connecting to an externally deployed Ollama instance,
+# or for a future subchart.
+ollama:
+  enabled: false # Set to true if you have an Ollama subchart reference in Chart.yaml and want Helm to deploy it.
+                 # For now, this mostly controls service URL templating if deployed externally.
+  service:
+    name: ollama-service # Expected K8s service name for Ollama (if deployed externally or by this chart)
+    port: 11434
+  # If ollama were a subchart, you'd have its specific values here:
+  # image:
+  #   repository: ollama/ollama
+  #   tag: latest
+  # persistence:
+  #   enabled: true
+  #   size: 20Gi # For models
+
+# RabbitMQ subchart values (from Bitnami RabbitMQ chart)
+rabbitmq:
+  enabled: false # Set to true to deploy RabbitMQ as a subchart
+  # Example overrides for the Bitnami RabbitMQ subchart:
+  # fullnameOverride: {{ printf "%s-rabbitmq" .Release.Name }} # Ensures predictable service name
+  auth:
+    username: "user" # Default user for local dev
+    password: "password" # Default password for local dev. CHANGE FOR PRODUCTION (use secrets).
+  persistence:
+    enabled: false # For local dev, true for production
+    # size: 5Gi
+  # service:
+  #   port: 5672
+  #   managementPort: 15672
+  #   name: rabbitmq # This might be overridden by fullnameOverride or release name.
+                  # The RABBITMQ_HOST below uses {{ .Release.Name }}-rabbitmq for predictability.
+
 
 # --- Common Application Settings (can be expanded) ---
 commonConfig:

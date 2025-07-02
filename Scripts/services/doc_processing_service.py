@@ -9,6 +9,7 @@ from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
 import torch # For device selection
 import uuid # For generating document IDs
+import fitz # PyMuPDF
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -139,27 +140,41 @@ async def process_document_endpoint(
     if file:
         filename = file.filename
         logger.info(f"Received file: {filename}, content type: {file.content_type}")
+        content_bytes = await file.read()
 
-        if not filename.endswith(".txt"): # Basic check for this iteration
-            logger.warning(f"Received file '{filename}' is not a .txt file. This iteration only supports .txt for content processing.")
-            # Metadata will still be parsed and returned, but no indexing will occur.
-        else:
+        if filename.lower().endswith(".txt"):
             try:
-                content_bytes = await file.read()
-                text_to_embed = content_bytes.decode('utf-8') # Assuming UTF-8 for .txt
-                logger.info(f"File '{filename}' read successfully (length: {len(text_to_embed)}).")
+                text_to_embed = content_bytes.decode('utf-8')
+                logger.info(f"File '{filename}' (.txt) read successfully (length: {len(text_to_embed)}).")
             except Exception as e:
-                logger.error(f"Error reading or decoding file {filename}: {e}")
-                raise HTTPException(status_code=400, detail=f"Could not read or decode file: {str(e)}")
+                logger.error(f"Error decoding .txt file {filename}: {e}")
+                raise HTTPException(status_code=400, detail=f"Could not decode .txt file: {str(e)}")
+        elif filename.lower().endswith(".pdf"):
+            try:
+                pdf_document = fitz.open(stream=content_bytes, filetype="pdf")
+                text_parts = []
+                for page_num in range(len(pdf_document)):
+                    page = pdf_document.load_page(page_num)
+                    text_parts.append(page.get_text("text"))
+                text_to_embed = "\n".join(text_parts)
+                pdf_document.close()
+                if not text_to_embed.strip():
+                    logger.warning(f"PDF file '{filename}' contained no extractable text.")
+                    # text_to_embed will be empty or whitespace, handled later
+                else:
+                    logger.info(f"File '{filename}' (.pdf) text extracted successfully (length: {len(text_to_embed)}).")
+            except Exception as e:
+                logger.error(f"Error processing PDF file {filename}: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail=f"Could not process PDF file: {str(e)}")
+        else:
+            logger.warning(f"Received file '{filename}' is not a .txt or .pdf file. This iteration only supports these for content processing.")
+            # Metadata will still be parsed and returned, but no indexing will occur if text_to_embed is None.
+
     elif document_content:
         text_to_embed = document_content
         logger.info(f"Text content received (length: {len(text_to_embed)}).")
     else:
-        # If neither file nor content, it's an error, but allow metadata-only if a non-txt file was given.
-        # This logic is a bit convoluted due to supporting metadata-only for non-txt.
-        # Cleaner would be to reject non-txt outright or have separate endpoints.
-        if not filename: # No file at all was provided
-             raise HTTPException(status_code=400, detail="Either a '.txt' file or 'document_content' must be provided for processing.")
+        raise HTTPException(status_code=400, detail="Either a '.txt'/''.pdf' file or 'document_content' must be provided for processing.")
 
     parsed_metadata = {}
     try:
@@ -171,7 +186,7 @@ async def process_document_endpoint(
         raise HTTPException(status_code=400, detail="Invalid JSON format for metadata.")
 
     # --- Actual processing and Qdrant indexing ---
-    if text_to_embed: # Only proceed if we have text content from .txt or direct input
+    if text_to_embed and text_to_embed.strip(): # Only proceed if we have non-empty text content
         if not qdrant_client or not embedding_model:
             logger.error("Cannot process document: Qdrant client or embedding model not initialized.")
             raise HTTPException(status_code=503, detail="Service not ready to process and index documents.")
@@ -182,23 +197,38 @@ async def process_document_endpoint(
             logger.info(f"Embedding generated. Vector dimension: {len(embedding)}")
 
             # Prepare payload for Qdrant
-            # Ensure metadata is a dictionary
-            if not isinstance(parsed_metadata, dict):
+            if not isinstance(parsed_metadata, dict): # Ensure metadata is a dict
                 logger.warning(f"Parsed metadata is not a dictionary: {parsed_metadata}. Resetting to empty dict.")
                 parsed_metadata = {}
 
-            payload_for_qdrant = {"text": text_to_embed, "metadata": parsed_metadata.copy()} # Use a copy
+            payload_for_qdrant = {"text": text_to_embed, "metadata": parsed_metadata.copy()}
 
             if filename:
                 payload_for_qdrant["metadata"]["original_filename"] = filename
-                if "source" not in payload_for_qdrant["metadata"]: # Don't overwrite if 'source' was in parsed_metadata
-                     payload_for_qdrant["metadata"]["source"] = filename
+                if "source" not in payload_for_qdrant["metadata"]:
+                     payload_for_qdrant["metadata"]["source"] = filename # Default source to filename if not specified
 
-            # Use provided document_id from metadata or generate a new one
             doc_id_for_qdrant = parsed_metadata.get("document_id") or str(uuid.uuid4())
-            # Store the used ID back into the metadata payload for consistency
             payload_for_qdrant["metadata"]["_internal_id"] = doc_id_for_qdrant
 
+            # Generate basic keywords
+            try:
+                import re
+                words = re.findall(r'\b\w+\b', text_to_embed.lower())
+                # Simple stop word list, can be expanded or use a library like NLTK/spaCy
+                stop_words = set([
+                    "the", "a", "is", "in", "it", "to", "of", "and", "for", "on", "with", "this", "that",
+                    "an", "by", "as", "at", "or", "if", "not", "be", "was", "were", "am", "are", "has",
+                    "had", "do", "does", "did", "will", "would", "should", "can", "could", "may", "might",
+                    "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them", "my", "your",
+                    "his", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs", "from"
+                ])
+                keywords = list(set(word for word in words if word not in stop_words and len(word) > 2 and not word.isdigit()))
+                payload_for_qdrant["metadata"]["keywords"] = keywords[:150] # Store up to 150 keywords
+                logger.info(f"Generated {len(keywords)} basic keywords for document {doc_id_for_qdrant}.")
+            except Exception as kw_e:
+                logger.warning(f"Could not generate keywords for document {doc_id_for_qdrant}: {kw_e}")
+                payload_for_qdrant["metadata"]["keywords"] = []
 
             points_to_upsert = [
                 qdrant_models.PointStruct(
@@ -228,22 +258,26 @@ async def process_document_endpoint(
             logger.error(f"Error during document embedding or Qdrant indexing: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
     else:
-        # This case handles non .txt files where text_to_embed was not set, or empty content.
+        # This case handles:
+        # 1. Non .txt/.pdf files (text_to_embed remains None)
+        # 2. .pdf files that yielded no text (text_to_embed is empty or whitespace)
+        # 3. Direct document_content that was empty or whitespace
         status_message = "Document metadata received. "
-        if filename and not filename.endswith(".txt"):
-            status_message += f"File '{filename}' was not a .txt, so content not processed for indexing."
-        elif not text_to_embed and (filename or document_content is not None): # Content was explicitly empty or not provided from file
-             status_message += "No text content provided or extracted for indexing."
-        else: # Only metadata_json was provided, no file or content
-            status_message += "No file or document_content provided."
-
+        if filename and not (filename.lower().endswith(".txt") or filename.lower().endswith(".pdf")):
+            status_message += f"File '{filename}' type not supported for content extraction in this iteration."
+        elif text_to_embed is not None and not text_to_embed.strip(): # Content was extracted/provided but is empty
+             status_message += "No processable text content found in the document for indexing."
+        elif text_to_embed is None and filename : # File was provided but not .txt or .pdf
+             status_message += f"File '{filename}' type not supported for content extraction."
+        else: # Only metadata_json was provided, or document_content was None
+            status_message += "No text content provided or extracted for indexing."
 
         logger.info(status_message + f" Metadata: {parsed_metadata}")
         return ProcessingResponse(
             message=status_message,
             filename=filename,
             metadata_processed=parsed_metadata,
-            status="received_metadata_only"
+            status="received_metadata_only" # Or a more specific status
         )
 
 

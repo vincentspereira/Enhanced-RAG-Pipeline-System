@@ -377,7 +377,7 @@ This test verifies the basic document processing and RAG query flow.
     ```bash
     curl -X POST "<gateway-url>/document/process_document" \
       -F "file=@testdoc.txt" \
-      -F "metadata_json={\"source\":\"e2e_test\", \"doc_title\":\"Jules AI Agent\"}"
+      -F "metadata_json={\"source\":\"e2e_txt_test\", \"doc_title\":\"Jules AI Agent TXT\"}"
     ```
     Expected response should indicate successful indexing, e.g.:
     ```json
@@ -386,8 +386,8 @@ This test verifies the basic document processing and RAG query flow.
       "filename": "testdoc.txt",
       "qdrant_id": "some-uuid-or-custom-id", // The ID used in Qdrant
       "metadata_processed": {
-        "source": "e2e_test", // Or "testdoc.txt" if source wasn't in metadata_json
-        "doc_title": "Jules AI Agent",
+        "source": "e2e_txt_test",
+        "doc_title": "Jules AI Agent TXT",
         "original_filename": "testdoc.txt",
         "_internal_id": "some-uuid-or-custom-id"
       },
@@ -396,9 +396,20 @@ This test verifies the basic document processing and RAG query flow.
     ```
     Check `doc-processing-service` logs for confirmation of embedding and Qdrant upsert.
 
-3.  **Wait a few seconds for indexing to settle (optional, usually fast).**
+3.  **Create a simple PDF file `testdoc.pdf`**:
+    You can create one using any word processor and saving as PDF, or using a simple online converter with the text: "The quick brown fox jumps over the lazy dog."
 
-4.  **Query the RAG Service for content from the processed document (via Gateway)**:
+4.  **Process `testdoc.pdf` using the Document Processing Service (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/document/process_document" \
+      -F "file=@testdoc.pdf" \
+      -F "metadata_json={\"source\":\"e2e_pdf_test\", \"doc_title\":\"Lazy Fox PDF\"}"
+    ```
+    Expected response should indicate successful indexing. Check `doc-processing-service` logs.
+
+5.  **Wait a few seconds for indexing to settle.**
+
+6.  **Query the RAG Service for content from the processed TXT document (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
@@ -410,22 +421,44 @@ This test verifies the basic document processing and RAG query flow.
       "query": "What does Jules the AI agent enjoy?",
       "search_results": [
         {
-          "id": "some-uuid-or-custom-id", // Should match the qdrant_id from step 2
-          "score": 0.8, // Example score, will vary
+          // ... details of testdoc.txt ...
           "text": "Jules the AI agent enjoys software engineering and helping users.",
           "metadata": {
-            "source": "e2e_test", // Or "testdoc.txt"
-            "doc_title": "Jules AI Agent",
-            "original_filename": "testdoc.txt",
-            "_internal_id": "some-uuid-or-custom-id"
+            "source": "e2e_txt_test",
+            // ... other metadata ...
           }
         }
       ],
-      "answer": "Jules the AI agent enjoys software engineering and helping users.", // Or similar LLM-generated answer
-      "llm_model_used": "llama2" // Or your configured model
+      "answer": "Jules the AI agent enjoys software engineering and helping users.",
+      "llm_model_used": "llama2"
     }
     ```
-    If the `search_results` are empty or the answer is generic, check Qdrant data (e.g. using Qdrant dashboard if accessible, or by adding a debug endpoint to one of the services to inspect Qdrant). Ensure the document was indexed correctly and the query is relevant.
+
+7.  **Query the RAG Service for content from the processed PDF document (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/rag/query" \
+      -H "Content-Type: application/json" \
+      -d '{"query": "What does the fox jump over?", "top_k": 1, "generate_answer": true}'
+    ```
+    Expected response (will vary):
+    ```json
+    {
+      "query": "What does the fox jump over?",
+      "search_results": [
+        {
+          // ... details of testdoc.pdf text content ...
+          "text": "The quick brown fox jumps over the lazy dog.", // Or similar extracted text
+          "metadata": {
+            "source": "e2e_pdf_test",
+            // ... other metadata ...
+          }
+        }
+      ],
+      "answer": "The fox jumps over the lazy dog.", // Or similar
+      "llm_model_used": "llama2"
+    }
+    ```
+    If `search_results` are empty or the answer is generic for PDF, check `doc-processing-service` logs for PDF extraction success and Qdrant indexing. Also, ensure the PDF content was simple and extractable.
 
 ### 8.7. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
 This test verifies basic RabbitMQ connectivity and message flow. It requires running the example scripts manually.

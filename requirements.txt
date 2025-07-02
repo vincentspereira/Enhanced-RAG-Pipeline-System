@@ -46,7 +46,8 @@ google-cloud-storage==2.14.0
 google-cloud-bigquery==3.15.0 # For BigQuery integration
 
 # Document processing
-PyPDF2==3.0.1
+PyPDF2==3.0.1 # Retain for other potential PDF tasks or if preferred by other old scripts
+PyMuPDF==1.23.26 # For PDF text extraction in Document Processing Service (fitz)
 python-docx==1.1.2
 python-pptx==1.0.2
 openpyxl==3.1.5
@@ -76,6 +77,7 @@ textstat
 polars==0.20.10 # For Polars DataFrame integration
 duckdb==0.10.0 # For DuckDB in-process OLAP
 pika==1.3.2 # For RabbitMQ integration
+dask[dataframe]==2024.1.0 # For Dask parallel processing, includes dask and pandas
 
 # Monitoring, Caching & Search Features
 prometheus-client

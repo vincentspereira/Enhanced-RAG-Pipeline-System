@@ -158,6 +158,30 @@ def _format_context_for_llm(search_results: List[SearchResult]) -> str:
         return "No relevant information found in the knowledge base."
     return "\n---\n".join(context_parts)
 
+async def _keyword_search_stub(query_keywords: List[str], filters: Optional[Dict] = None) -> List[Dict]:
+    """
+    Placeholder for keyword search functionality.
+    In a real implementation, this would query Qdrant or another search index
+    using the provided keywords and filters.
+    """
+    logger.info(f"Keyword search stub called with keywords: {query_keywords}, filters: {filters}")
+    # This could involve constructing a Qdrant filter for the 'keywords' metadata field
+    # or using Qdrant's full-text search capabilities if the schema is set up for it.
+    # Example (conceptual, not fully implemented for Qdrant full-text here):
+    # if qdrant_client and query_keywords:
+    #     try:
+    #         # This is a simplified example; Qdrant's full-text search might require specific setup
+    #         # or using a different approach like filtering on a 'keywords' array field.
+    #         # For filtering on an array:
+    #         # keyword_conditions = [qdrant_models.FieldCondition(key="metadata.keywords", match=qdrant_models.MatchValue(value=kw)) for kw in query_keywords]
+    #         # combined_filter = qdrant_models.Filter(should=keyword_conditions) # 'should' for OR logic
+    #         # results = qdrant_client.scroll(collection_name=QDRANT_COLLECTION_NAME, scroll_filter=combined_filter, limit=10, with_payload=True)
+    #         # return [hit.payload for hit in results[0]]
+    #         pass
+    #     except Exception as e:
+    #         logger.error(f"Error in keyword search stub: {e}")
+    return []
+
 async def _generate_llm_answer(query: str, context: str, model_name: str) -> Optional[str]:
     if not llm_client:
         logger.error("LLM client not initialized.")

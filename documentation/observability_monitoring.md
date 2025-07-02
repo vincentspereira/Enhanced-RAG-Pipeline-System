@@ -1,80 +1,129 @@
 # Observability & Monitoring
 
-This document details the observability and monitoring setup for the system.
+This document details the observability and monitoring setup and strategy for the system. Effective observability is crucial for maintaining system health, performance, and reliability by collecting, visualizing, and alerting on key metrics, logs, and traces.
 
-**Purpose:** To ensure system health, performance, and reliability by collecting, visualizing, and alerting on key metrics, logs, and traces.
+## 1. Introduction
 
-## 1. Monitoring Stack Overview
+The goal of our observability strategy is to provide deep insights into the system's behavior, enabling rapid troubleshooting, performance optimization, and informed capacity planning. We aim to cover three main pillars of observability:
+*   **Metrics**: Quantitative measurements of system health and performance over time.
+*   **Logs**: Timestamped records of events occurring within the system.
+*   **Traces**: Records of the path of a request as it flows through various services (to be implemented/detailed further in later phases).
 
-*   **Prometheus:** Used for metrics collection and alerting.
-*   **Grafana:** Used for visualizing metrics through dashboards.
-*   **ELK Stack (Elasticsearch, Logstash, Kibana):** Used for log aggregation, search, and visualization.
-*   **Distributed Tracing (e.g., Jaeger, Zipkin):** Used for tracing requests across microservices.
+## 2. Current Logging Strategy
 
-## 2. Prometheus Configuration
+*   **Standard Output**: All services (Internal API Gateway, RAG Query Service, Document Processing Service) are configured to log to standard output (`stdout`) and standard error (`stderr`). This is a best practice for containerized applications.
+*   **Log Format**: Logs generally follow a pattern including timestamp, logger name, log level, and message (e.g., `%(asctime)s - %(name)s - %(levelname)s - %(message)s`).
+*   **Log Levels**: Services use standard Python logging levels (INFO, WARNING, ERROR, DEBUG). The default level is typically INFO, configurable via environment variables (e.g., `LOGGING_LEVEL`).
 
-*   **Targets:**
-    *   [List of services and endpoints scraped by Prometheus]
-    *   [Configuration for scraping Docker health and resource usage metrics]
-*   **Key Metrics Collected:**
-    *   [CPU, memory, disk I/O, network traffic]
-    *   [Application-specific metrics (e.g., request latency, error rates, queue lengths)]
-*   **Alerting Rules:**
-    *   [Link to Alertmanager configuration and key alert rules]
-    *   [Notification channels for alerts]
+### Log Aggregation (Conceptual for Kubernetes)
+In a Kubernetes environment, logs written to `stdout`/`stderr` by containers are typically collected by the cluster's logging agent (e.g., Fluentd, Fluent Bit, or a custom agent) and forwarded to a centralized log aggregation backend.
+*   **Recommended Tools**: ELK Stack (Elasticsearch, Logstash, Kibana) or Grafana Loki are common choices.
+    *   **Elasticsearch**: Powerful for indexing and searching large volumes of logs.
+    *   **Logstash/Fluentd/Fluent Bit**: Used for collecting, parsing, and shipping logs.
+    *   **Kibana/Grafana**: Used for visualizing and querying logs.
+*   **Benefits**: Centralized searching, analysis, and alerting based on log patterns.
 
-## 3. Grafana Configuration
+## 3. Metrics Collection (Conceptual for Kubernetes using Prometheus)
 
-*   **Dashboards:**
-    *   [Overview of key dashboards for system health, performance, and resource utilization]
-    *   [Dashboards for Docker health and resource usage, including ML-based predictive monitoring for anomaly detection]
-*   **Data Sources:**
-    *   [Configuration of Prometheus and other data sources]
+Prometheus is the planned tool for metrics collection and alerting, especially within a Kubernetes environment.
 
-## 4. ELK Stack Configuration
+### 3.1. Sources of Metrics
 
-*   **Logstash:**
-    *   [Configuration for log ingestion pipelines from various sources]
-    *   [Parsing and enrichment of logs]
-*   **Elasticsearch:**
-    *   [Index management and retention policies]
-*   **Kibana:**
-    *   [Key dashboards and visualizations for log analysis]
-    *   [Saved queries for common troubleshooting scenarios]
+*   **Kubernetes API Server**: Provides metrics about the cluster state itself (nodes, pods, deployments, etc.).
+*   **Kubelet / cAdvisor**: Each Kubelet includes cAdvisor, which exposes metrics about container resource usage (CPU, memory, network, disk I/O). This directly provides insights into Docker container performance for our services. The `deployment/kubernetes/monitoring.yaml` file might contain configurations related to how these base Kubernetes metrics are scraped or exposed.
+*   **Service Endpoints (Application Metrics)**:
+    *   FastAPI applications (our current services) can expose Prometheus-compatible metrics via an exporter library (e.g., `starlette-exporter` or `prometheus-fastapi-instrumentator`).
+    *   These exporters would expose metrics via a `/metrics` endpoint on each service.
+*   **Key Metrics for Current Services**:
+    *   **Internal API Gateway**:
+        *   HTTP request rate, error rate, latency (overall and per upstream service).
+        *   Upstream service health/availability.
+    *   **RAG Query Service**:
+        *   `/query` endpoint: request rate, error rate, P50/P90/P99 latencies.
+        *   Qdrant client: query latency, error rates.
+        *   Ollama client: call latency, error rates.
+        *   Embedding model load time (if applicable at startup).
+        *   Resource utilization (CPU/memory, especially if GPU is used later).
+    *   **Document Processing Service**:
+        *   `/process_document` endpoint: request rate, error rate, processing time per document.
+        *   File type processing counts (TXT, PDF, DOCX).
+        *   Qdrant client: indexing latency, error rates.
+        *   Embedding model load time and embedding generation time.
+*   **Ollama Service**: Ollama itself may expose Prometheus metrics. This needs to be investigated for specific metrics.
+*   **Qdrant Service**: Qdrant can be configured to expose Prometheus metrics (e.g., query rates, latencies, segment sizes).
 
-## 5. Distributed Tracing
+### 3.2. Prometheus Setup (Conceptual)
 
-*   **Instrumentation:**
-    *   [How applications are instrumented for tracing]
-*   **Tracer Backend:**
-    *   [Configuration of Jaeger/Zipkin or other tracing backend]
-*   **Key Traces:**
-    *   [Examples of important traces for understanding request flows]
+*   **Prometheus Server**: Deployed within the Kubernetes cluster.
+*   **Scraping Configuration**: Prometheus would be configured to scrape the `/metrics` endpoints of:
+    *   Application services.
+    *   cAdvisor (via Kubelet).
+    *   Qdrant.
+    *   Ollama (if available).
+    *   Kubernetes API server.
+*   **Service Discovery**: Kubernetes service discovery (e.g., using annotations on Service objects, or `ServiceMonitor` Custom Resources if using the Prometheus Operator) would be used to automatically find and scrape new service instances.
 
-## 6. Service Level Agreements (SLAs) & Service Level Objectives (SLOs)
+## 4. Visualization & Dashboards (Grafana - Conceptual)
 
-*   **Definitions:**
-    *   [Clearly defined SLAs for critical services]
-    *   [SLOs for key performance indicators (e.g., uptime, latency, error rate)]
-*   **Measurement:**
-    *   [How SLAs and SLOs are measured using the monitoring stack]
-*   **Reporting:**
-    *   [How adherence to SLAs/SLOs is reported]
+*   **Grafana**: Planned as the primary tool for visualizing metrics collected by Prometheus and potentially logs from Loki/Elasticsearch.
+*   **Dashboards**: Custom dashboards would be created to monitor:
+    *   Overall system health.
+    *   Performance of individual services (API Gateway, RAG Query, Doc Processing).
+    *   Resource utilization of Kubernetes pods and nodes.
+    *   Qdrant performance.
+    *   Ollama performance.
+    *   Key business metrics derived from application metrics.
 
-## 7. Error Budgets
+## 5. Alerting (Prometheus Alertmanager - Conceptual)
 
-*   **Calculation:**
-    *   [How error budgets are calculated based on SLOs]
-*   **Tracking:**
-    *   [How error budget consumption is tracked]
-*   **Policy:**
-    *   [Policies for action when error budgets are exceeded]
+*   **Alertmanager**: Would be used with Prometheus to define alerting rules based on metrics.
+*   **Example Alerts**:
+    *   High error rates on service endpoints.
+    *   High latency for critical operations (e.g., RAG query response time).
+    *   High resource utilization (CPU/memory pressure).
+    *   Services being down or unresponsive.
+    *   Qdrant or Ollama issues.
+*   **Notification Channels**: Alerts would be routed to appropriate channels (e.g., Slack, PagerDuty, email).
 
-## 8. ML-based Predictive Monitoring
+## 6. Service Level Agreements (SLAs), Objectives (SLOs) & Error Budgets
 
-*   **Anomaly Detection:**
-    *   [Description of the ML models used for predictive monitoring and anomaly detection, particularly for Docker health and resource usage]
-    *   [How these models are integrated with Prometheus/Grafana]
-    *   [Thresholds and alerting mechanisms for detected anomalies]
+These are critical for defining and measuring service reliability.
 
-*TODO: Fill in with specific configurations, links to dashboards, alert rules, and detailed procedures for each section.*
+*   **Service Level Agreement (SLA)**:
+    *   **Definition**: A formal commitment made to users/customers about the level of service they can expect (e.g., 99.9% uptime for the API Gateway). SLAs often have business consequences if not met.
+    *   **Current Status**: Specific SLAs are not yet defined and would require business input.
+
+*   **Service Level Objective (SLO)**:
+    *   **Definition**: A target value or range of values for a specific service level indicator (SLI). SLIs are quantitative measures of service performance. SLOs are internal targets used to meet SLAs.
+    *   **Examples for Current Services (Illustrative - to be refined with business requirements)**:
+        *   **API Gateway (`/api/...` routes)**:
+            *   Availability SLO: 99.9% of requests in a month return a non-5xx status code.
+            *   Latency SLO: 99% of requests served in < 500ms.
+        *   **RAG Query Service (`/query` endpoint)**:
+            *   Availability SLO: 99.5% of requests in a month return a non-5xx status code.
+            *   Latency SLO (semantic search + LLM answer): 95% of queries answered in < 5 seconds.
+            *   Search Relevance SLO (harder to measure automatically): e.g., X% of top results deemed relevant by human evaluation (requires feedback loop).
+        *   **Document Processing Service (`/process_document` endpoint)**:
+            *   Availability SLO: 99.5% of requests return a non-5xx status code.
+            *   Processing Success Rate SLO: 99% of supported documents successfully indexed.
+            *   Processing Time SLO (for a standard document): 95% of documents processed in < 30 seconds.
+    *   **Measurement**: SLOs would be measured using metrics collected by Prometheus.
+
+*   **Error Budget**:
+    *   **Definition**: Derived from an SLO, the error budget is the acceptable level of unreliability. For example, an SLO of 99.9% availability means a 0.1% error budget over the compliance period.
+    *   **Usage**: Error budgets provide a data-driven way to balance reliability work with feature development. If the error budget is being consumed too quickly, focus shifts to reliability. If there's ample budget, more risk can be taken with new releases.
+    *   **Current Status**: Error budgets will be calculated once specific SLOs are defined and agreed upon.
+
+## 7. Distributed Tracing (Future Phase)
+
+*   **Concept**: Tracing requests as they flow across multiple services to understand dependencies and pinpoint bottlenecks in distributed systems.
+*   **Tools**: Jaeger, Zipkin, OpenTelemetry.
+*   **Status**: Not yet implemented. To be considered in later phases as the microservice architecture matures.
+
+## 8. ML-based Predictive Monitoring (From Original Requirements - Future Phase)
+
+*   **Concept**: Using machine learning models to analyze monitoring data (metrics, logs) to predict potential issues or detect anomalies that simple threshold-based alerting might miss.
+*   **Application**: Could be applied to Docker health, resource usage, query patterns, etc.
+*   **Status**: Not yet implemented. This is an advanced topic requiring a mature monitoring data pipeline and ML expertise.
+
+*This document will be updated as the system evolves and more concrete monitoring and observability solutions are implemented.*

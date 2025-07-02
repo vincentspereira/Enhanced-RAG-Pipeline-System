@@ -407,9 +407,20 @@ This test verifies the basic document processing and RAG query flow.
     ```
     Expected response should indicate successful indexing. Check `doc-processing-service` logs.
 
-5.  **Wait a few seconds for indexing to settle.**
+5.  **Create a simple DOCX file `testdoc.docx`**:
+    Create a DOCX file (e.g., using Word, LibreOffice Writer) with the content: "DOCX files are processed by Jules." Save it as `testdoc.docx`.
 
-6.  **Query the RAG Service for content from the processed TXT document (via Gateway)**:
+6.  **Process `testdoc.docx` using the Document Processing Service (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/document/process_document" \
+      -F "file=@testdoc.docx" \
+      -F "metadata_json={\"source\":\"e2e_docx_test\", \"doc_title\":\"Jules DOCX Test\"}"
+    ```
+    Expected response should indicate successful indexing. Check `doc-processing-service` logs.
+
+7.  **Wait a few seconds for indexing to settle.**
+
+8.  **Query the RAG Service for content from the processed TXT document (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
@@ -459,6 +470,32 @@ This test verifies the basic document processing and RAG query flow.
     }
     ```
     If `search_results` are empty or the answer is generic for PDF, check `doc-processing-service` logs for PDF extraction success and Qdrant indexing. Also, ensure the PDF content was simple and extractable.
+
+9.  **Query the RAG Service for content from the processed DOCX document (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/rag/query" \
+      -H "Content-Type: application/json" \
+      -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true}'
+    ```
+    Expected response (will vary):
+    ```json
+    {
+      "query": "What files are processed by Jules?",
+      "search_results": [
+        {
+          // ... details of testdoc.docx text content ...
+          "text": "DOCX files are processed by Jules.", // Or similar extracted text
+          "metadata": {
+            "source": "e2e_docx_test",
+            // ... other metadata ...
+          }
+        }
+      ],
+      "answer": "Jules processes DOCX files.", // Or similar
+      "llm_model_used": "llama2"
+    }
+    ```
+    Check logs if results are not as expected.
 
 ### 8.7. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
 This test verifies basic RabbitMQ connectivity and message flow. It requires running the example scripts manually.

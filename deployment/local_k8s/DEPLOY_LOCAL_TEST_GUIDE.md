@@ -223,7 +223,33 @@ RabbitMQ can be used for asynchronous task processing between services.
     ```
     Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
 
-### 4.4. (Future) Deploy PostgreSQL & MongoDB
+### 4.4. Deploy Redis (for Caching)
+
+Redis is used by the RAG Query Service for caching search results and LLM answers.
+
+1.  **Apply the Redis Deployment and Service manifests**:
+    ```bash
+    kubectl apply -f deployment/local_k8s/dependencies/redis-deployment.yaml
+    kubectl apply -f deployment/local_k8s/dependencies/redis-service.yaml
+    ```
+
+2.  **Wait for Redis to be ready**:
+    ```bash
+    kubectl get deployment redis -w
+    kubectl get pods -l app=redis -w
+    # Wait until the redis pod is Running and Ready (1/1).
+    ```
+
+3.  **(Optional) Test Redis Connection (from a pod with redis-cli or locally if port-forwarded)**:
+    ```bash
+    # Port-forward Redis for local cli access
+    # kubectl port-forward service/redis-service 6379:6379
+    # Then, in another terminal (if you have redis-cli installed):
+    # redis-cli -h localhost -p 6379 ping
+    # Expected: PONG
+    ```
+
+### 4.5. (Future) Deploy PostgreSQL & MongoDB
 Placeholder for when these are needed. You would typically use Helm charts.
 
 ## 5. Configure Services to Find Dependencies
@@ -477,22 +503,25 @@ This test verifies the basic document processing and RAG query flow.
       -H "Content-Type: application/json" \
       -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true}'
     ```
+    The first time you run this, it will fetch from Qdrant and Ollama. Subsequent identical requests (within the cache TTLs, default 1hr for search results, 24hr for LLM answers) should be faster and potentially indicate `cached_response: true` (or parts of it were cached).
+    To test caching explicitly:
+    *   Run the query once. Note the response time (e.g., using `time curl ...`).
+    *   Run the exact same query again. It should be significantly faster.
+    *   Check the RAG Query Service logs for "Cache HIT" messages.
+    *   To bypass cache for a specific request, add `"force_no_cache": true` to the JSON payload:
+        ```bash
+        curl -X POST "<gateway-url>/rag/query" \
+          -H "Content-Type: application/json" \
+          -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true, "force_no_cache": true}'
+        ```
     Expected response (will vary):
     ```json
     {
       "query": "What files are processed by Jules?",
-      "search_results": [
-        {
-          // ... details of testdoc.docx text content ...
-          "text": "DOCX files are processed by Jules.", // Or similar extracted text
-          "metadata": {
-            "source": "e2e_docx_test",
-            // ... other metadata ...
-          }
-        }
-      ],
+      "search_results": [ /* ... */ ],
       "answer": "Jules processes DOCX files.", // Or similar
-      "llm_model_used": "llama2"
+      "llm_model_used": "llama2",
+      "cached_response": false // or true if a previous identical non-forced query was made
     }
     ```
     Check logs if results are not as expected.

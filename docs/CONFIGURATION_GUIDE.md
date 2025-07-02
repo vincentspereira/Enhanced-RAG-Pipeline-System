@@ -72,6 +72,14 @@ This section will list common environment variables. As services are developed o
     *   `RABBITMQ_USER`: Username for RabbitMQ connection (e.g., `user`).
     *   `RABBITMQ_PASSWORD`: Password for RabbitMQ connection (e.g., `password`, use Secrets for production).
     *   `RABBITMQ_MANAGEMENT_PORT`: Port for RabbitMQ Management UI (default: `15672`), if applicable for accessing UI.
+*   **Redis (Caching)**:
+    *   `REDIS_HOST`: Hostname of the Redis server (e.g., `localhost` or `redis-service` in K8s).
+    *   `REDIS_PORT`: Port for Redis server (default: `6379`).
+    *   `REDIS_PASSWORD`: (Optional) Password for Redis connection if authentication is enabled.
+    *   `REDIS_DB_RAG_CACHE`: Redis database number to use for RAG query service caching (default: `1`).
+    *   `SEARCH_RESULTS_CACHE_TTL_SECONDS`: TTL for cached search results (default: `3600` seconds / 1 hour).
+    *   `LLM_ANSWER_CACHE_TTL_SECONDS`: TTL for cached LLM answers (default: `86400` seconds / 24 hours).
+
 
 ### Service-Specific Configurations
 

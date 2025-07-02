@@ -1,0 +1,52 @@
+{{- /*
+NOTES.txt provides information to the user after the chart is successfully installed.
+*/ -}}
+The RAG System chart has been deployed with release name: {{ .Release.Name }}
+
+Services:
+{{- if .Values.internalApiGateway.enabled }}
+1.  **Internal API Gateway**:
+    {{- $gateway := .Values.internalApiGateway }}
+    {{- $gatewayFullname := include "rag-system.componentFullname" (dict "component" $gateway "context" $) }}
+    Service Name: {{ $gatewayFullname }}
+    Service Type: {{ $gateway.service.type }}
+    {{- if eq $gateway.service.type "NodePort" }}
+    Access it via NodePort:
+    export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ $gatewayFullname }})
+    export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+    echo "Internal API Gateway URL: http://$NODE_IP:$NODE_PORT"
+    {{- else if eq $gateway.service.type "LoadBalancer" }}
+    Access it via LoadBalancer IP:
+    export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ $gatewayFullname }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+    echo "Internal API Gateway URL: http://$SERVICE_IP:{{ $gateway.service.port }}"
+    {{- else }}
+    Service Type is ClusterIP. Access it from within the cluster at:
+    {{ $gatewayFullname }}.{{ .Release.Namespace }}.svc.cluster.local:{{ $gateway.service.port }}
+    {{- end }}
+{{- end }}
+
+{{- if .Values.ragQueryService.enabled }}
+2.  **RAG Query Service**:
+    {{- $rag := .Values.ragQueryService }}
+    {{- $ragFullname := include "rag-system.componentFullname" (dict "component" $rag "context" $) }}
+    Service Name: {{ $ragFullname }} (ClusterIP)
+    Cluster Internal URL: {{ $ragFullname }}.{{ .Release.Namespace }}.svc.cluster.local:{{ $rag.service.port }}
+{{- end }}
+
+{{- if .Values.docProcessingService.enabled }}
+3.  **Document Processing Service**:
+    {{- $docproc := .Values.docProcessingService }}
+    {{- $docprocFullname := include "rag-system.componentFullname" (dict "component" $docproc "context" $) }}
+    Service Name: {{ $docprocFullname }} (ClusterIP)
+    Cluster Internal URL: {{ $docprocFullname }}.{{ .Release.Namespace }}.svc.cluster.local:{{ $docproc.service.port }}
+{{- end }}
+
+---
+**Important Notes**:
+- This chart deploys the core RAG application services. Dependencies like Qdrant, Ollama, RabbitMQ, and Redis are NOT deployed by this chart and must be set up separately.
+- Ensure the configuration in your `values.yaml` (or overridden values) correctly points to these external dependencies.
+- The default image is `{{ .Values.image.repository }}:{{ .Values.image.tag }}`. You may need to update this to your own image.
+
+For detailed testing instructions, refer to the `DEPLOY_LOCAL_TEST_GUIDE.md` in the repository.
+You can check the status of the deployment using:
+  kubectl get all -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}

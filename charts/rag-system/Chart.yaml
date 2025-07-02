@@ -34,14 +34,22 @@ dependencies:
     condition: rabbitmq.enabled
     # alias: rabbitmq-dependency
 
-  # Ollama does not have a widely adopted official/stable general-purpose Helm chart as of common knowledge cut-off.
-  # If a good community chart is identified (e.g., from https://github.com/ollama-helm/ollama or similar),
-  # it could be added here. For now, we'll manage its configuration via values.yaml assuming external deployment,
-  # but a placeholder here shows intent.
+  # Ollama Dependency Note:
+  # As of creating this chart, there isn't a single, official, universally adopted Helm chart for Ollama
+  # that is as standardized as those for Redis or RabbitMQ (e.g., from Bitnami).
+  # Community charts for Ollama exist (e.g., https://github.com/ollama-helm/ollama).
+  # This chart currently DOES NOT bundle Ollama as a subchart dependency due to this variability.
+  # Instead, you are expected to deploy Ollama separately into your Kubernetes cluster.
+  # The `values.yaml` file under the `ollama:` section allows you to specify the
+  # Kubernetes service name and port of YOUR Ollama deployment, which the RAG Query Service will use.
+  # If you choose to use a community Ollama Helm chart, you would deploy it separately and then
+  # configure this chart's `values.yaml` (`ollama.service.name` and `ollama.service.port`) to point to it.
+  #
+  # Example if a stable subchart were to be integrated in the future:
   # - name: ollama
-  #   version: "0.1.0" # Example version
-  #   repository: "oci://ghcr.io/ollama-helm/ollama-chart" # Example OCI registry if they publish one
-  #   condition: ollama.enabled
+  #   version: "<chart-version>"
+  #   repository: "<ollama-chart-repository-url>"
+  #   condition: ollama.subchart.enabled # e.g. values.ollama.subchart.enabled
   #   alias: ollama-dependency
 
 # Optional: Specify maintainers

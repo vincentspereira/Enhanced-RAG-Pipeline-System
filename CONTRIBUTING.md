@@ -14,9 +14,35 @@ We use GitHub to host code, to track issues and feature requests, as well as acc
 1. Fork the repo and create your branch from `main`.
 2. If you've added code that should be tested, add tests.
 3. If you've changed APIs, update the documentation.
-4. Ensure the test suite passes.
+4. Ensure the test suite passes (see "Running Tests" section below).
 5. Make sure your code lints.
 6. Issue that pull request!
+
+## Running Tests
+
+This project uses `pytest` for automated testing. Tests are located in the `tests/` directory, categorized into `unit/` and `integration/`.
+
+To run all tests locally:
+1. Ensure you have installed all dependencies, including testing dependencies, from `requirements.txt` (ideally in a Python virtual environment):
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Navigate to the root of the repository.
+3. Run pytest:
+   ```bash
+   pytest
+   ```
+   Or, for more verbose output:
+   ```bash
+   pytest -v
+   ```
+To run specific tests:
+   ```bash
+   pytest tests/unit/test_your_module.py
+   pytest tests/integration/test_your_service.py
+   ```
+
+Integration tests might require certain services (like Qdrant, Redis, or the application services themselves) to be running. Refer to the specific test files or `DEPLOY_LOCAL_TEST_GUIDE.md` for details on their prerequisites. Unit tests are designed to run in isolation, often using mocks.
 
 ## Pull Request Process
 1. Update the README.md with details of changes to the interface

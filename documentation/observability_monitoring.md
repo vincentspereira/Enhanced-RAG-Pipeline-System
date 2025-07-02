@@ -115,6 +115,83 @@ These are critical for defining and measuring service reliability.
             *   Availability SLO: 99.5% of requests return a non-5xx status code.
             *   Processing Success Rate SLO: 99% of supported documents successfully indexed.
             *   Processing Time SLO (for a standard document): 95% of documents processed in < 30 seconds.
+
+### 4.1. Grafana Dashboards (Conceptual Examples)
+
+Once Prometheus is collecting metrics, Grafana dashboards would be created to visualize system health and performance. Here are some conceptual examples for key dashboards and panels:
+
+**A. Overall System Health Dashboard:**
+*   **Panel: API Gateway Request Rate & Errors**: Time series graph of total requests per second to the gateway, stacked by HTTP status code (2xx, 3xx, 4xx, 5xx). (Metric: `http_requests_total` from gateway, or Prometheus FastAPI Instrumentator default metrics if gateway adopts it).
+*   **Panel: Core Service Availability**: Stat panels or gauges showing current availability (based on successful health checks or uptime SLO) for API Gateway, RAG Query Service, Document Processing Service.
+*   **Panel: Latency Percentiles (P95/P99) for Key Endpoints**: Line graphs showing P95/P99 latency for API Gateway main routes, RAG Query `/query`, Doc Processing `/process_document`. (Metric: `http_request_duration_seconds_bucket` from FastAPI Instrumentator).
+*   **Panel: Resource Utilization Overview**: Gauges or time series for overall CPU/Memory utilization of the Kubernetes nodes or key namespaces. (Metrics from Kubelet/cAdvisor).
+
+**B. RAG Query Service Dashboard:**
+*   **Panel: `/query` Endpoint Performance**:
+    *   Request Rate (per second/minute).
+    *   Error Rate (percentage of 5xx responses).
+    *   Latency Histogram & Percentiles (P50, P90, P95, P99). (Metrics: `fastapi_requests_total`, `fastapi_request_duration_seconds`).
+*   **Panel: Qdrant Interaction**:
+    *   Qdrant Query Latency Histogram (custom metric: `rag_qdrant_query_latency_seconds_bucket`).
+    *   Qdrant Query Count/Rate (custom metric derived from observations or a counter).
+    *   Error rate for Qdrant operations (if such custom metrics are added).
+*   **Panel: Ollama LLM Interaction**:
+    *   Ollama Call Latency Histogram (custom metric: `rag_ollama_llm_latency_seconds_bucket`).
+    *   Ollama Call Count/Rate.
+    *   Error rate for Ollama calls (if custom metrics added).
+*   **Panel: Cache Performance**:
+    *   Cache Hit/Miss Rates (custom metrics: `rag_cache_hits_total`, `rag_cache_misses_total` - can be shown as a ratio or stacked graph).
+*   **Panel: Resource Usage**: CPU, Memory, Network I/O for RAG Query Service pods.
+*   **Panel: Active Requests**: Gauge or time series for `rag_inprogress_requests`.
+
+**C. Document Processing Service Dashboard:**
+*   **Panel: `/process_document` Endpoint Performance**: Request Rate, Error Rate, Latency Histogram/Percentiles.
+*   **Panel: Document Types Processed**: Count of documents processed, potentially broken down by type (TXT, PDF, DOCX) if custom metrics are added for this.
+*   **Panel: Qdrant Indexing Performance**:
+    *   Indexing Latency (if a custom metric is added for time taken to embed and upsert).
+    *   Number of documents/chunks indexed per minute/hour.
+*   **Panel: Resource Usage**: CPU, Memory for Document Processing Service pods.
+
+**D. Kubernetes Cluster & Node Dashboard (Often provided by default K8s Prometheus/Grafana setups):**
+*   Node CPU, Memory, Disk, Network utilization.
+*   Pod counts, restarts, status.
+
+### 4.2. Alerting Rules (Conceptual Examples for Alertmanager)
+
+Alerting rules would be defined in Prometheus and managed by Alertmanager.
+
+**High-Severity Alerts (Examples - Page Duty / Ops Team):**
+*   **API Gateway Down / High Error Rate**:
+    ```yaml
+    # alert: APIGatewayHighErrorRate
+    # expr: (sum(rate(http_requests_total{job="api-gateway",code=~"5.."}[5m])) by (job) / sum(rate(http_requests_total{job="api-gateway"}[5m])) by (job)) * 100 > 5
+    # for: 5m
+    # labels:
+    #   severity: critical
+    # annotations:
+    #   summary: "API Gateway experiencing high error rate (>5%)"
+    #   description: "More than 5% of requests to the API Gateway resulted in 5xx errors over the last 5 minutes."
+    ```
+*   **RAGQueryServiceDown**: `expr: up{job="rag-query-service"} == 0 for: 2m`
+*   **RAGQueryServiceHighP99Latency**: `expr: histogram_quantile(0.99, sum(rate(fastapi_request_duration_seconds_bucket{job="rag-query-service",path="/query"}[5m])) by (le)) > 5` (for >5s P99 latency)
+*   **CriticalDependencyDown (Qdrant/Ollama/Redis)**: Based on RAG Query Service health check components or direct metrics from dependencies if available (e.g., `qdrant_up == 0`).
+    ```yaml
+    # alert: QdrantUnavailableToRAGService
+    # expr: rag_service_component_health{component="qdrant_accessible", status="degraded"} == 1 # Assuming health check exposes this
+    # for: 3m
+    # labels:
+    #   severity: critical
+    # annotations:
+    #   summary: "RAG Query Service reports Qdrant as inaccessible."
+    ```
+
+**Warning-Severity Alerts (Examples - Ticket / Team Channel):**
+*   **HighCPUOrMemoryUsage**: `expr: (sum(container_cpu_usage_seconds_total{namespace="default", pod=~"rag-.*"}) by (pod) / sum(kube_pod_container_resource_limits_cpu_cores{namespace="default", pod=~"rag-.*"}) by (pod)) * 100 > 80 for: 15m` (CPU usage >80% for 15 mins). Similar for memory.
+*   **LowCacheHitRateRAG**: `expr: sum(rate(rag_cache_hits_total{job="rag-query-service",cache_type="llm_answer"}[1h])) / (sum(rate(rag_cache_hits_total{job="rag-query-service",cache_type="llm_answer"}[1h])) + sum(rate(rag_cache_misses_total{job="rag-query-service",cache_type="llm_answer"}[1h]))) < 0.3 for: 2h` (LLM answer cache hit rate < 30% for 2 hours).
+*   **RabbitMQHighQueueDepth** (if queues were actively used by services): `expr: rabbitmq_queue_messages_ready{queue="my_critical_queue"} > 1000 for: 10m`
+*   **FrequentPodRestarts**: `expr: rate(kube_pod_container_status_restarts_total{namespace="default"}[15m]) * 60 * 5 > 0 for: 5m` (any restarts in 5 mins, more sophisticated logic for >N restarts needed).
+
+These examples would need to be refined with actual metric names exposed by services and dependencies, and appropriate thresholds set based on operational experience and SLOs.
     *   **Measurement**: SLOs would be measured using metrics collected by Prometheus.
 
 *   **Error Budget**:

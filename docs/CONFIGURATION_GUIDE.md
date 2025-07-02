@@ -87,10 +87,12 @@ This section will list common environment variables. As services are developed o
     *   `API_GATEWAY_PORT`: Port the API Gateway listens on (default: `8000`).
     *   `RAG_QUERY_SERVICE_URL`: Upstream URL for the RAG Query Service (e.g., `http://rag-query-service.default.svc.cluster.local:8001`).
     *   `DOC_PROCESSING_SERVICE_URL`: Upstream URL for the Document Processing Service (e.g., `http://doc-processing-service.default.svc.cluster.local:8002`).
-    *   `VALID_API_KEYS_CSV`: Comma-separated list of valid API keys for clients to use when calling the gateway (e.g., "key1,key2,secretkey"). **Note**: For production, manage these securely, ideally not directly in ConfigMaps.
+    *   `VALID_API_KEYS_CSV`: Comma-separated list of valid API keys.
+        *   **Source**: Loaded from a Kubernetes Secret (key: `api-keys-csv` by default) named e.g., `{{release_name}}-internal-api-gateway-apikeys`.
+        *   **Note**: For production, ensure this Secret is created and managed securely. The Helm chart can optionally create a basic secret from `values.yaml` for local development if `internalApiGateway.apiKeys.createSecret` is true and `existingSecret.name` is not set, but this is not recommended for production secrets.
 *   **RAG Query Service**:
     *   `RAG_SERVICE_PORT`: Port the RAG Query Service listens on (default: `8001`).
-    *   `RAG_SERVICE_DEFAULT_MODEL`: Default embedding model to use.
+    *   `RAG_SERVICE_DEFAULT_MODEL`: Default embedding model to use. # This seems like a legacy or unused config var based on current service code.
 *   **Document Processing Service**:
     *   `DOC_PROCESSING_SERVICE_PORT`: Port the Document Processing Service listens on (default: `8002`).
 

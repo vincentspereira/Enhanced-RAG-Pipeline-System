@@ -38,7 +38,20 @@ internalApiGateway:
     DOC_PROCESSING_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.docProcessingService \"context\" .) }}:{{ .Values.docProcessingService.service.port }}"
     API_GATEWAY_PORT: {{ .Values.internalApiGateway.containerPort | quote }}
     LOGGING_LEVEL: "INFO"
-    VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # TODO: Change for actual deployments.
+    # VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # This will be sourced from a secret
+  apiKeys:
+    # If existingSecret.name is provided, the chart will use this existing Kubernetes Secret.
+    # The Secret must contain a key (specified by existingSecret.keyName) whose value is the comma-separated API keys.
+    existingSecret:
+      name: "" # e.g., "rag-gateway-apikeys-secret"
+      keyName: "api-keys-csv" # Key in the secret holding the CSV string of API keys
+
+    # If existingSecret.name is NOT provided AND createSecret is true,
+    # a new Secret will be created by the chart using the directValues.
+    # THIS IS INTENDED FOR LOCAL DEVELOPMENT/TESTING ONLY.
+    # For production, always use a pre-existing, securely managed Secret.
+    createSecret: false # Default to false, requiring an existing secret
+    directValues: "devkey1-from-values,devkey2-from-values" # Example if createSecret is true & no existingSecret
 
 ragQueryService:
   enabled: true

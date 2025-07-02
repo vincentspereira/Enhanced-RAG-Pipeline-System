@@ -15,6 +15,10 @@ spec:
     metadata:
       labels:
         {{- include "rag-system.selectorLabelsComponent" (dict "componentName" .Values.ragQueryService.name "context" .) | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: {{ .Values.ragQueryService.containerPort | quote }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:

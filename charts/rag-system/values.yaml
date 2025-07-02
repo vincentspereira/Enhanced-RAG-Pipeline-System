@@ -34,11 +34,14 @@ internalApiGateway:
   # Configurable upstream service URLs
   # These will be used to populate the internal-api-gateway-config ConfigMap
   config:
-    RAG_QUERY_SERVICE_URL: "http://rag-query-service:8001" # Default points to service name in same namespace
-    DOC_PROCESSING_SERVICE_URL: "http://doc-processing-service:8002"
+    RAG_QUERY_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.ragQueryService \"context\" .) }}:{{ .Values.ragQueryService.service.port }}"
+    DOC_PROCESSING_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.docProcessingService \"context\" .) }}:{{ .Values.docProcessingService.service.port }}"
+    API_GATEWAY_PORT: {{ .Values.internalApiGateway.containerPort | quote }} # Ensure this matches the containerPort
     LOGGING_LEVEL: "INFO"
+    VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # IMPORTANT: Change for actual deployments. Use Helm secrets for production.
 
 ragQueryService:
+  enabled: true # Allows disabling this sub-component if needed
   name: rag-query-service
   port: 8001
   service:

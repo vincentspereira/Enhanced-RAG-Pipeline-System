@@ -11,5 +11,7 @@ data:
   DOC_PROCESSING_SERVICE_URL: "http://doc-processing-service:8002" # Service name 'doc-processing-service', port 8002
   API_GATEWAY_PORT: "8000" # Port the gateway itself will listen on
   API_GATEWAY_HOST: "0.0.0.0"
-  # Add other general configurations if needed by the gateway itself
   LOGGING_LEVEL: "INFO"
+  # IMPORTANT: For local raw manifest testing only. In production with Helm, this comes from values.
+  # For better security, use Kubernetes secrets for API keys, not ConfigMaps.
+  VALID_API_KEYS_CSV: "local-raw-key1,local-raw-key2"

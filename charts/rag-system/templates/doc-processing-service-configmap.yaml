@@ -1,0 +1,20 @@
+{{- if .Values.docProcessingService.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.docProcessingService "context" .) }}-config
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.docProcessingService.name }}
+data:
+  DOC_PROCESSING_SERVICE_PORT: {{ .Values.docProcessingService.config.DOC_PROCESSING_SERVICE_PORT | quote }}
+  QDRANT_HOST: {{ .Values.docProcessingService.config.QDRANT_HOST | quote }}
+  QDRANT_PORT: {{ .Values.docProcessingService.config.QDRANT_PORT | quote }}
+  QDRANT_COLLECTION_NAME: {{ .Values.docProcessingService.config.QDRANT_COLLECTION_NAME | quote }}
+  {{- if .Values.docProcessingService.config.QDRANT_API_KEY }} # Assuming it might have one from values
+  QDRANT_API_KEY: {{ .Values.docProcessingService.config.QDRANT_API_KEY | quote }}
+  {{- end }}
+  EMBEDDING_MODEL_NAME: {{ .Values.docProcessingService.config.EMBEDDING_MODEL_NAME | quote }}
+  MODEL_DEVICE: {{ .Values.docProcessingService.config.MODEL_DEVICE | quote }}
+  LOGGING_LEVEL: {{ .Values.docProcessingService.config.LOGGING_LEVEL | quote }}
+{{- end }}

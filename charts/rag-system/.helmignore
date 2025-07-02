@@ -1,0 +1,45 @@
+# Patterns to ignore when packaging Helm charts.
+# This is similar to .gitignore.
+
+# Common ignored files
+.DS_Store
+*~
+*.swp
+*.bak
+*.tmp
+
+# Chart Linter output
+lint_output.txt
+
+# Hidden files and directories
+.*
+!/.well-known
+
+# Source control directories
+.git/
+.gitignore
+.gitmodules
+.gitattributes
+
+# IDE and editor directories/files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Local values files that should not be packaged
+values.local.yaml
+values.dev.yaml
+local-values.yaml
+
+# Test files if they are part of the chart source but not templates
+tests/
+test/
+
+# Temporary build artifacts or downloaded dependencies
+vendor/
+tmp/
+*.tgz
+
+# If you store original K8s YAMLs that were converted, ignore them
+original-yamls/

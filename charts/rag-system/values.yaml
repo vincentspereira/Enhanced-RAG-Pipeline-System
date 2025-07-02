@@ -1,0 +1,145 @@
+# Default values for rag-system chart.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: your-dockerhub-username/rag-system # TODO: Update with your image repository
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "latest" # Or specific version like "iter7"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Service configurations for each microservice --
+# These will mirror the structure of ConfigMaps but be sourced from values.yaml
+
+internalApiGateway:
+  name: internal-api-gateway
+  port: 8000
+  service:
+    type: NodePort # Or LoadBalancer for cloud, ClusterIP if behind another Ingress
+    port: 80 # External port for the service
+    # nodePort: 30080 # Optional: specify if type is NodePort and you want a fixed port
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  # Configurable upstream service URLs
+  # These will be used to populate the internal-api-gateway-config ConfigMap
+  config:
+    RAG_QUERY_SERVICE_URL: "http://rag-query-service:8001" # Default points to service name in same namespace
+    DOC_PROCESSING_SERVICE_URL: "http://doc-processing-service:8002"
+    LOGGING_LEVEL: "INFO"
+
+ragQueryService:
+  name: rag-query-service
+  port: 8001
+  service:
+    type: ClusterIP # Typically internal only
+    port: 8001
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "2Gi"
+    # gpu:
+    #   enabled: false # Set to true if nodes have GPUs and image supports it
+    #   count: 1
+    #   type: "nvidia.com/gpu" # Or other GPU resource type
+  config:
+    QDRANT_HOST: "qdrant-service" # Assumes Qdrant is deployed with this service name
+    QDRANT_PORT: "6333"
+    QDRANT_COLLECTION_NAME: "documents"
+    # QDRANT_API_KEY: "" # Keep sensitive data out of default values.yaml; use secrets or --set
+    EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
+    MODEL_DEVICE: "cpu" # Change to "cuda" if GPU is enabled and available
+    OLLAMA_API_URL: "http://ollama-service:11434" # Assumes Ollama is deployed with this service name
+    LLM_MODEL_NAME: "llama2"
+    LOGGING_LEVEL: "INFO"
+    # Redis Caching Config
+    REDIS_HOST: "redis-service" # Assumes Redis is deployed with this service name
+    REDIS_PORT: "6379"
+    REDIS_DB_RAG_CACHE: "1" # Specific DB for RAG cache
+    SEARCH_RESULTS_CACHE_TTL_SECONDS: "3600"
+    LLM_ANSWER_CACHE_TTL_SECONDS: "86400"
+
+
+docProcessingService:
+  name: doc-processing-service
+  port: 8002
+  service:
+    type: ClusterIP
+    port: 8002
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi" # Increased slightly as it now loads embedding model
+    limits:
+      cpu: "1000m" # Can burst for embedding
+      memory: "1Gi" # Increased
+  config:
+    QDRANT_HOST: "qdrant-service"
+    QDRANT_PORT: "6333"
+    QDRANT_COLLECTION_NAME: "documents"
+    EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
+    MODEL_DEVICE: "cpu"
+    LOGGING_LEVEL: "INFO"
+
+# --- Common Application Settings (example, can be expanded) ---
+# These could be mounted into all pods if needed via a shared ConfigMap or individual env vars
+commonConfig:
+  ENVIRONMENT_NAME: "development"
+  LOG_FORMAT: "json" # Example
+
+# Service Account (optional, if needed for K8s API access or specific permissions)
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+# Pod Security Context (example, adjust as needed)
+podSecurityContext: {}
+  # fsGroup: 2000
+
+# Container Security Context (example, adjust as needed)
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# Ingress (optional, if you want to expose gateway via Ingress controller)
+ingress:
+  enabled: false
+  # className: ""
+  # annotations: {}
+  #   # kubernetes.io/ingress.class: nginx
+  #   # kubernetes.io/tls-acme: "true"
+  # hosts:
+  #   - host: chart-example.local
+  #     paths:
+  #       - path: /
+  #         pathType: ImplementationSpecific
+  # tls: []
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - chart-example.local
+
+# Dependencies (Qdrant, Ollama, RabbitMQ, Redis) are NOT managed by this chart in Iteration 7.
+# They are expected to be deployed separately as per DEPLOY_LOCAL_TEST_GUIDE.md.
+# In future iterations, they could be added as subcharts or managed externally.

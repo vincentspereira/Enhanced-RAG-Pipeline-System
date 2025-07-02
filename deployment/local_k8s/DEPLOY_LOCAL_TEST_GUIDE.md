@@ -223,7 +223,33 @@ RabbitMQ can be used for asynchronous task processing between services.
     ```
     Open `http://localhost:15672` in your browser. Login with the credentials defined in `rabbitmq-deployment.yaml` (default in example: `user` / `password`).
 
-### 4.4. (Future) Deploy PostgreSQL & MongoDB
+### 4.4. Deploy Redis (for Caching)
+
+Redis is used by the RAG Query Service for caching search results and LLM answers.
+
+1.  **Apply the Redis Deployment and Service manifests**:
+    ```bash
+    kubectl apply -f deployment/local_k8s/dependencies/redis-deployment.yaml
+    kubectl apply -f deployment/local_k8s/dependencies/redis-service.yaml
+    ```
+
+2.  **Wait for Redis to be ready**:
+    ```bash
+    kubectl get deployment redis -w
+    kubectl get pods -l app=redis -w
+    # Wait until the redis pod is Running and Ready (1/1).
+    ```
+
+3.  **(Optional) Test Redis Connection (from a pod with redis-cli or locally if port-forwarded)**:
+    ```bash
+    # Port-forward Redis for local cli access
+    # kubectl port-forward service/redis-service 6379:6379
+    # Then, in another terminal (if you have redis-cli installed):
+    # redis-cli -h localhost -p 6379 ping
+    # Expected: PONG
+    ```
+
+### 4.5. (Future) Deploy PostgreSQL & MongoDB
 Placeholder for when these are needed. You would typically use Helm charts.
 
 ## 5. Configure Services to Find Dependencies
@@ -239,9 +265,9 @@ data:
 ```
 This should already be set if you are applying the latest version of the ConfigMap.
 
-## 6. Deploy Application Services
+## 6. Deploy Application Services (Option A: Using Raw Kubernetes Manifests)
 
-Apply the Kubernetes manifests for the RAG system services:
+If you prefer to deploy using the individual YAML files (e.g., for deeper inspection or if not using Helm):
 
 ```bash
 kubectl apply -f deployment/local_k8s/internal-api-gateway-configmap.yaml
@@ -256,12 +282,58 @@ kubectl apply -f deployment/local_k8s/doc-processing-service-configmap.yaml
 kubectl apply -f deployment/local_k8s/doc-processing-service-deployment.yaml
 kubectl apply -f deployment/local_k8s/doc-processing-service-service.yaml
 ```
-Or apply all at once:
+Or apply all service-specific YAMLs at once (ensure dependencies like ConfigMaps are created before Deployments if not using `kubectl apply -k` or similar which handles ordering):
 ```bash
-kubectl apply -f deployment/local_k8s/
+# Apply ConfigMaps first
+kubectl apply -f deployment/local_k8s/internal-api-gateway-configmap.yaml
+kubectl apply -f deployment/local_k8s/rag-query-service-configmap.yaml
+kubectl apply -f deployment/local_k8s/doc-processing-service-configmap.yaml
+
+# Then Deployments and Services
+kubectl apply -f deployment/local_k8s/internal-api-gateway-deployment.yaml
+kubectl apply -f deployment/local_k8s/internal-api-gateway-service.yaml
+kubectl apply -f deployment/local_k8s/rag-query-service-deployment.yaml
+kubectl apply -f deployment/local_k8s/rag-query-service-service.yaml
+kubectl apply -f deployment/local_k8s/doc-processing-service-deployment.yaml
+kubectl apply -f deployment/local_k8s/doc-processing-service-service.yaml
 ```
 
-## 6. Verify Deployment
+## 6. Deploy Application Services (Option B: Using Helm Chart - Recommended)
+
+This is the recommended method for deploying the core RAG system services.
+
+1.  **Navigate to the repository root.**
+2.  **Update `charts/rag-system/values.yaml` (Important!):**
+    *   Open `charts/rag-system/values.yaml`.
+    *   Change `image.repository` to your actual Docker image repository (e.g., `yourdockerhubusername/rag-system` or `localhost:5000/rag-system` if using a local registry).
+    *   Change `image.tag` to the tag you used during the `docker build` step (e.g., `iter7-local` or your specific tag).
+    *   Review other default values (ports, resources, dependency service names like `QDRANT_HOST`, `OLLAMA_API_URL`, `REDIS_HOST`) and adjust if your dependency deployments use different names or your local K8s environment has specific needs.
+
+3.  **Install the Helm chart:**
+    Give your deployment a release name, e.g., `my-rag-instance`.
+    ```bash
+    helm install my-rag-instance ./charts/rag-system -f ./charts/rag-system/values.yaml --namespace default
+    # Or, if you want to override specific values without modifying values.yaml:
+    # helm install my-rag-instance ./charts/rag-system \
+    #   --set image.repository="yourdockerhubusername/rag-system" \
+    #   --set image.tag="your-tag" \
+    #   --namespace default
+    ```
+    The output will include `NOTES.txt` with information on how to access the services.
+
+4.  **To upgrade an existing Helm release:**
+    ```bash
+    helm upgrade my-rag-instance ./charts/rag-system -f ./charts/rag-system/values.yaml --namespace default
+    ```
+
+5.  **To uninstall a Helm release:**
+    ```bash
+    helm uninstall my-rag-instance --namespace default
+    ```
+
+**Note on Dependencies**: This Helm chart only deploys the core RAG application services. Dependencies like Qdrant, Ollama, RabbitMQ, and Redis must still be deployed separately (e.g., using `kubectl apply -f deployment/local_k8s/dependencies/`) as described in Section 4. Ensure they are running *before* installing the Helm chart.
+
+## 7. Verify Deployment
 
 Check the status of your pods, services, and deployments:
 
@@ -407,9 +479,20 @@ This test verifies the basic document processing and RAG query flow.
     ```
     Expected response should indicate successful indexing. Check `doc-processing-service` logs.
 
-5.  **Wait a few seconds for indexing to settle.**
+5.  **Create a simple DOCX file `testdoc.docx`**:
+    Create a DOCX file (e.g., using Word, LibreOffice Writer) with the content: "DOCX files are processed by Jules." Save it as `testdoc.docx`.
 
-6.  **Query the RAG Service for content from the processed TXT document (via Gateway)**:
+6.  **Process `testdoc.docx` using the Document Processing Service (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/document/process_document" \
+      -F "file=@testdoc.docx" \
+      -F "metadata_json={\"source\":\"e2e_docx_test\", \"doc_title\":\"Jules DOCX Test\"}"
+    ```
+    Expected response should indicate successful indexing. Check `doc-processing-service` logs.
+
+7.  **Wait a few seconds for indexing to settle.**
+
+8.  **Query the RAG Service for content from the processed TXT document (via Gateway)**:
     ```bash
     curl -X POST "<gateway-url>/rag/query" \
       -H "Content-Type: application/json" \
@@ -459,6 +542,35 @@ This test verifies the basic document processing and RAG query flow.
     }
     ```
     If `search_results` are empty or the answer is generic for PDF, check `doc-processing-service` logs for PDF extraction success and Qdrant indexing. Also, ensure the PDF content was simple and extractable.
+
+9.  **Query the RAG Service for content from the processed DOCX document (via Gateway)**:
+    ```bash
+    curl -X POST "<gateway-url>/rag/query" \
+      -H "Content-Type: application/json" \
+      -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true}'
+    ```
+    The first time you run this, it will fetch from Qdrant and Ollama. Subsequent identical requests (within the cache TTLs, default 1hr for search results, 24hr for LLM answers) should be faster and potentially indicate `cached_response: true` (or parts of it were cached).
+    To test caching explicitly:
+    *   Run the query once. Note the response time (e.g., using `time curl ...`).
+    *   Run the exact same query again. It should be significantly faster.
+    *   Check the RAG Query Service logs for "Cache HIT" messages.
+    *   To bypass cache for a specific request, add `"force_no_cache": true` to the JSON payload:
+        ```bash
+        curl -X POST "<gateway-url>/rag/query" \
+          -H "Content-Type: application/json" \
+          -d '{"query": "What files are processed by Jules?", "top_k": 1, "generate_answer": true, "force_no_cache": true}'
+        ```
+    Expected response (will vary):
+    ```json
+    {
+      "query": "What files are processed by Jules?",
+      "search_results": [ /* ... */ ],
+      "answer": "Jules processes DOCX files.", // Or similar
+      "llm_model_used": "llama2",
+      "cached_response": false // or true if a previous identical non-forced query was made
+    }
+    ```
+    Check logs if results are not as expected.
 
 ### 8.7. Test RabbitMQ Producer/Consumer Examples (Manual Execution)
 This test verifies basic RabbitMQ connectivity and message flow. It requires running the example scripts manually.

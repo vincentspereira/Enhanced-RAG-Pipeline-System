@@ -10,6 +10,8 @@ from sentence_transformers import SentenceTransformer
 import torch # For device selection
 import uuid # For generating document IDs
 import fitz # PyMuPDF
+from docx import Document as DocxDocument # For reading .docx files
+import io # For reading file stream into docx Document
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -166,15 +168,29 @@ async def process_document_endpoint(
             except Exception as e:
                 logger.error(f"Error processing PDF file {filename}: {e}", exc_info=True)
                 raise HTTPException(status_code=400, detail=f"Could not process PDF file: {str(e)}")
+        elif filename.lower().endswith(".docx"):
+            try:
+                # python-docx reads from a file-like object. BytesIO can wrap the byte stream.
+                docx_file_stream = io.BytesIO(content_bytes)
+                document = DocxDocument(docx_file_stream)
+                text_parts = [para.text for para in document.paragraphs]
+                text_to_embed = "\n".join(text_parts)
+                if not text_to_embed.strip():
+                    logger.warning(f"DOCX file '{filename}' contained no extractable text from paragraphs.")
+                else:
+                    logger.info(f"File '{filename}' (.docx) text extracted successfully (length: {len(text_to_embed)}).")
+            except Exception as e:
+                logger.error(f"Error processing DOCX file {filename}: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail=f"Could not process DOCX file: {str(e)}")
         else:
-            logger.warning(f"Received file '{filename}' is not a .txt or .pdf file. This iteration only supports these for content processing.")
+            logger.warning(f"Received file '{filename}' is not a .txt, .pdf, or .docx file. This iteration only supports these for content processing.")
             # Metadata will still be parsed and returned, but no indexing will occur if text_to_embed is None.
 
     elif document_content:
         text_to_embed = document_content
         logger.info(f"Text content received (length: {len(text_to_embed)}).")
     else:
-        raise HTTPException(status_code=400, detail="Either a '.txt'/''.pdf' file or 'document_content' must be provided for processing.")
+        raise HTTPException(status_code=400, detail="Either a '.txt', '.pdf', '.docx' file or 'document_content' must be provided for processing.")
 
     parsed_metadata = {}
     try:
@@ -259,17 +275,28 @@ async def process_document_endpoint(
             raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
     else:
         # This case handles:
-        # 1. Non .txt/.pdf files (text_to_embed remains None)
-        # 2. .pdf files that yielded no text (text_to_embed is empty or whitespace)
+        # This case handles:
+        # 1. Non .txt/.pdf/.docx files (text_to_embed remains None)
+        # 2. .pdf/.docx files that yielded no text (text_to_embed is empty or whitespace)
         # 3. Direct document_content that was empty or whitespace
         status_message = "Document metadata received. "
-        if filename and not (filename.lower().endswith(".txt") or filename.lower().endswith(".pdf")):
-            status_message += f"File '{filename}' type not supported for content extraction in this iteration."
+        supported_types = [".txt", ".pdf", ".docx"]
+        file_type_supported = False
+        if filename:
+            for ext in supported_types:
+                if filename.lower().endswith(ext):
+                    file_type_supported = True
+                    break
+
+        if filename and not file_type_supported:
+            status_message += f"File '{filename}' type not supported for content extraction in this iteration. Supported: {', '.join(supported_types)}."
         elif text_to_embed is not None and not text_to_embed.strip(): # Content was extracted/provided but is empty
              status_message += "No processable text content found in the document for indexing."
-        elif text_to_embed is None and filename : # File was provided but not .txt or .pdf
+        elif text_to_embed is None and filename and file_type_supported : # File was of supported type but extraction failed or yielded nothing earlier
+             status_message += f"File '{filename}' was of a supported type but no text could be extracted or content was empty."
+        elif text_to_embed is None and filename and not file_type_supported: # Explicitly state not supported
              status_message += f"File '{filename}' type not supported for content extraction."
-        else: # Only metadata_json was provided, or document_content was None
+        else: # Only metadata_json was provided, or document_content was None/empty
             status_message += "No text content provided or extracted for indexing."
 
         logger.info(status_message + f" Metadata: {parsed_metadata}")

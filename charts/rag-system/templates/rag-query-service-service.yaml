@@ -1,0 +1,18 @@
+{{- if .Values.ragQueryService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.ragQueryService "context" .) }}
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.ragQueryService.name }}
+spec:
+  type: {{ .Values.ragQueryService.service.type }}
+  ports:
+    - port: {{ .Values.ragQueryService.service.port }}
+      targetPort: {{ .Values.ragQueryService.containerPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "rag-system.selectorLabelsComponent" (dict "componentName" .Values.ragQueryService.name "context" .) | nindent 4 }}
+{{- end }}

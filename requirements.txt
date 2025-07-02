@@ -82,7 +82,7 @@ dask[dataframe]==2024.1.0 # For Dask parallel processing, includes dask and pand
 # Monitoring, Caching & Search Features
 prometheus-client
 elasticsearch
-redis
+redis==5.0.1 # For Redis caching (updated/specific version)
 diskcache
 lmdb
 

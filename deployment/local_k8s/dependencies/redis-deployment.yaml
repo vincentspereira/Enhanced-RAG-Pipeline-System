@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: default # Or your target namespace
+  labels:
+    app: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.2-alpine # Using a specific version, alpine for smaller size
+        ports:
+        - containerPort: 6379
+          name: redis-port
+        # Basic configuration using command-line arguments
+        # For more complex config, use a ConfigMap and mount it.
+        # command: ["redis-server"] # Default command is usually fine
+        # args: ["--requirepass", "yourpassword"] # Example: if password needed, use K8s secret
+        # For local testing without a password, this is often sufficient.
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 6379
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        # Volume for data persistence (optional for caching, but good for some Redis use cases)
+        # Using emptyDir for simplest local setup - data lost if pod restarts.
+        # If persistence is needed for cache across restarts (less common for pure cache):
+        # volumeMounts:
+        # - name: redis-data
+        #   mountPath: /data
+      # volumes:
+      # - name: redis-data
+      #   emptyDir: {}
+      # Or for persistent storage:
+      #   persistentVolumeClaim:
+      #     claimName: redis-pvc # You would need to create this PVC separately or use StatefulSet
+# Note: For a production Redis, consider using a Helm chart or Redis Operator for HA, Sentinel, Clustering, etc.
+# This is a minimal setup for local development/testing.

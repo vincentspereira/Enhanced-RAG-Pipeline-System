@@ -1,0 +1,30 @@
+apiVersion: v2
+name: rag-system
+description: A Helm chart for deploying the RAG System core services
+
+# A chart can be either an 'application' or a 'library' chart.
+# Application charts are a collection of templates that can be packaged into versioned archives
+# to be deployed.
+type: application
+
+# This is the chart version. This version number should be incremented each time you make changes
+# to the chart and its templates, including the appVersion.
+version: 0.1.0
+
+# This is the version number of the application being deployed. This version number should be
+# incremented each time you make changes to the application.
+appVersion: "1.0.0"
+
+# Optional: Specify maintainers
+# maintainers:
+#   - name: YourName
+#     email: your.email@example.com
+
+# Optional: Specify keywords for your chart
+# keywords:
+#   - rag
+#   - ai
+#   - nlp
+
+# Optional: Home page URL
+# home: https://example.com/rag-system-docs

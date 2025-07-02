@@ -1,0 +1,23 @@
+{{- if .Values.internalApiGateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.internalApiGateway "context" .) }}
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.internalApiGateway.name }}
+spec:
+  type: {{ .Values.internalApiGateway.service.type }}
+  ports:
+    - port: {{ .Values.internalApiGateway.service.port }}
+      targetPort: {{ .Values.internalApiGateway.containerPort }}
+      protocol: TCP
+      name: http
+    {{- if eq .Values.internalApiGateway.service.type "NodePort" }}
+    {{- if .Values.internalApiGateway.service.nodePort }}
+      nodePort: {{ .Values.internalApiGateway.service.nodePort }}
+    {{- end }}
+    {{- end }}
+  selector:
+    {{- include "rag-system.selectorLabelsComponent" (dict "componentName" .Values.internalApiGateway.name "context" .) | nindent 4 }}
+{{- end }}

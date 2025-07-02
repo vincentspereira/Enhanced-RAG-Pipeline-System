@@ -1,8 +1,13 @@
 import os
 import logging
-from fastapi import FastAPI, HTTPException, Query
+import httpx # For Ollama client
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+import re # For keyword extraction
+import uuid # For Qdrant IDs if not provided in metadata
+import hashlib # For generating cache keys
+import json # For serializing cache data
 
 from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
@@ -12,27 +17,28 @@ import torch # For device selection
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Import config loader
+# Import config loader and RedisCacheManager
 try:
     from Scripts.utils.config_loader import get_config_value
+    from Scripts.utils.redis_cache_manager import RedisCacheManager
 except ImportError:
     import sys
-    sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    scripts_dir = os.path.dirname(current_dir)
+    if scripts_dir not in sys.path:
+        sys.path.append(scripts_dir)
     try:
         from utils.config_loader import get_config_value
+        from utils.redis_cache_manager import RedisCacheManager
     except ImportError as e:
-        logger.error(f"Critical: Failed to import get_config_value for RAG Query Service. Error: {e}")
-        def get_config_value(env_var_name, yaml_path=None, default=None): # Basic fallback
-            return os.getenv(env_var_name, default)
-
-# --- Configuration ---
-QDRANT_HOST = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
-QDRANT_PORT = int(get_config_value("QDRANT_PORT", yaml_path="vector_store.qdrant.port", default=6333))
-QDRANT_COLLECTION_NAME = get_config_value("QDRANT_COLLECTION_NAME", yaml_path="vector_store.qdrant.collection_name", default="documents")
-QDRANT_API_KEY = get_config_value("QDRANT_API_KEY", yaml_path="vector_store.qdrant.api_key")
-
-EMBEDDING_MODEL_NAME = get_config_value("EMBEDDING_MODEL_NAME", yaml_path="model.embedding_model", default="all-MiniLM-L6-v2")
-MODEL_DEVICE = get_config_value("MODEL_DEVICE", yaml_path="model.device", default="cpu")
+        logger.error(f"Critical: Failed to import get_config_value or RedisCacheManager. Error: {e}", exc_info=True)
+        def get_config_value(env_var_name, yaml_path=None, default=None): return os.getenv(env_var_name, default)
+        class RedisCacheManager: # Dummy for fallback
+            def __init__(self, *args, **kwargs): logger.error("Using DUMMY RedisCacheManager due to import error.")
+            def is_available(self): return False
+            def get_json(self, key): return None
+            def set_json(self, key, data, ttl_seconds=None): pass
+            def close(self): pass
 
 # --- Configuration ---
 QDRANT_HOST = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
@@ -44,299 +50,255 @@ EMBEDDING_MODEL_NAME = get_config_value("EMBEDDING_MODEL_NAME", yaml_path="model
 MODEL_DEVICE = get_config_value("MODEL_DEVICE", yaml_path="model.device", default="cpu")
 
 OLLAMA_API_URL = get_config_value("OLLAMA_API_URL", yaml_path="ollama.api_url", default="http://localhost:11434")
-LLM_MODEL_NAME = get_config_value("LLM_MODEL_NAME", yaml_path="ollama.llm_model", default="llama2") # e.g., llama2, mistral
+LLM_MODEL_NAME = get_config_value("LLM_MODEL_NAME", yaml_path="ollama.llm_model", default="llama2")
+
+REDIS_HOST = get_config_value("REDIS_HOST", yaml_path="caching.redis.host", default="localhost")
+REDIS_PORT = int(get_config_value("REDIS_PORT", yaml_path="caching.redis.port", default=6379))
+REDIS_DB_RAG = int(get_config_value("REDIS_DB_RAG_CACHE", yaml_path="caching.redis.db_rag_cache", default=1)) # Specific DB for this service
+SEARCH_RESULTS_CACHE_TTL = int(get_config_value("SEARCH_RESULTS_CACHE_TTL_SECONDS", default=3600)) # 1 hour
+LLM_ANSWER_CACHE_TTL = int(get_config_value("LLM_ANSWER_CACHE_TTL_SECONDS", default=86400)) # 24 hours
 
 # --- Global Variables ---
 app = FastAPI(title="RAG Query Service")
 qdrant_client: Optional[QdrantClient] = None
 embedding_model: Optional[SentenceTransformer] = None
-llm_client: Optional[httpx.AsyncClient] = None # For Ollama
+llm_client: Optional[httpx.AsyncClient] = None
+redis_cache: Optional[RedisCacheManager] = None
 
 # --- Pydantic Models ---
 class QueryRequest(BaseModel):
     query: str = Field(..., min_length=1, description="The search query text.")
-    top_k: int = Field(5, gt=0, le=100, description="Number of search results to retrieve for context.")
-    # Add filters later if needed: filters: Optional[Dict[str, Any]] = None
+    top_k: int = Field(5, gt=0, le=100, description="Number of primary search results to retrieve for context.")
+    search_type: str = Field("hybrid", description="Type of search: 'semantic', 'keyword', or 'hybrid'.")
     generate_answer: bool = Field(True, description="Whether to generate a natural language answer using an LLM.")
+    force_no_cache: bool = Field(False, description="Set to true to bypass cache for this request.")
 
 class SearchResult(BaseModel):
-    id: Union[int, str] # Qdrant point ID can be int or UUID string
+    id: Union[int, str, uuid.UUID]
     score: float
     text: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    search_method: Optional[str] = None
 
 class QueryResponse(BaseModel):
     query: str
     search_results: List[SearchResult]
     answer: Optional[str] = None
     llm_model_used: Optional[str] = None
+    cached_response: bool = Field(False, description="Indicates if the main part of the response (search results or full answer) was served from cache.")
 
 # --- Service Initialization and Shutdown ---
 @app.on_event("startup")
 async def startup_event():
-    global qdrant_client, embedding_model, llm_client
+    global qdrant_client, embedding_model, llm_client, redis_cache
     logger.info("RAG Query Service starting up...")
 
-    # Initialize Qdrant Client
-    try:
-        logger.info(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}...")
-        qdrant_client = QdrantClient(
-            host=QDRANT_HOST,
-            port=QDRANT_PORT,
-            api_key=QDRANT_API_KEY if QDRANT_API_KEY else None,
-            # prefer_grpc=True, # Consider enabling for performance if Qdrant server supports it well
-        )
-        # Test connection / check collection
-        try:
-            qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-            logger.info(f"Successfully connected to Qdrant and collection '{QDRANT_COLLECTION_NAME}' exists.")
-        except Exception as e: # Catching generic Exception as specific Qdrant exceptions can vary
-            logger.error(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' not found or connection error: {e}. Please ensure it's created with appropriate vector params.")
-            # For Iteration 1, we assume collection exists. Creation logic could be added.
-            # Example:
-            # vector_size = 384 # For all-MiniLM-L6-v2
-            # self.client.create_collection(
-            #     collection_name=self.collection_name,
-            #     vectors_config=qdrant_models.VectorParams(size=vector_size, distance=qdrant_models.Distance.COSINE)
-            # )
-
+    try: # Qdrant
+        qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY if QDRANT_API_KEY else None)
+        qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+        logger.info(f"Qdrant connected: {QDRANT_COLLECTION_NAME}")
     except Exception as e:
-        logger.error(f"Failed to initialize Qdrant client: {e}")
-        qdrant_client = None # Ensure it's None if init fails
+        logger.error(f"Qdrant connection error: {e}", exc_info=True); qdrant_client = None
 
-    # Initialize Embedding Model
-    try:
-        logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME} on device: {MODEL_DEVICE}")
-        device_to_use = MODEL_DEVICE
-        if device_to_use == "cuda" and not torch.cuda.is_available():
-            logger.warning("CUDA specified but not available. Falling back to CPU.")
-            device_to_use = "cpu"
-
+    try: # Embedding Model
+        device_to_use = MODEL_DEVICE if MODEL_DEVICE == "cpu" or torch.cuda.is_available() else "cpu"
+        if MODEL_DEVICE == "cuda" and device_to_use == "cpu": logger.warning("CUDA specified but not available. Falling back to CPU for embedding model.")
         embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME, device=device_to_use)
-        logger.info("Embedding model loaded successfully.")
+        logger.info(f"Embedding model loaded: {EMBEDDING_MODEL_NAME} on {device_to_use}. Dim: {embedding_model.get_sentence_embedding_dimension()}")
     except Exception as e:
-        logger.error(f"Failed to load embedding model '{EMBEDDING_MODEL_NAME}': {e}")
-        embedding_model = None
+        logger.error(f"Failed to load embedding model: {e}", exc_info=True); embedding_model = None
 
-    if not qdrant_client or not embedding_model:
-        logger.error("RAG Query Service startup failed due to component initialization errors.")
-        # Optionally, could raise an exception here to prevent FastAPI from starting if critical components fail
-    else:
-        logger.info("RAG Query Service startup complete.")
+    # LLM Client
+    llm_client = httpx.AsyncClient(base_url=OLLAMA_API_URL, timeout=httpx.Timeout(120.0))
+    logger.info(f"LLM client for Ollama at {OLLAMA_API_URL} initialized.")
 
-    # Initialize HTTP client for Ollama
-    global llm_client
-    llm_client = httpx.AsyncClient(base_url=OLLAMA_API_URL, timeout=httpx.Timeout(120.0)) # Longer timeout for LLM
-    logger.info(f"LLM client initialized for Ollama at {OLLAMA_API_URL}")
+    # Redis Cache
+    redis_cache = RedisCacheManager(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_RAG)
+    if redis_cache.is_available(): logger.info(f"Redis cache connected at {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB_RAG}")
+    else: logger.warning(f"Redis cache NOT available at {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB_RAG}. Service will run without caching.")
 
+    if not qdrant_client or not embedding_model: logger.error("CRITICAL: Qdrant or Embedding Model failed initialization.")
+    else: logger.info("RAG Query Service core components (Qdrant, Embedding Model) initialized.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global qdrant_client, llm_client
     logger.info("RAG Query Service shutting down...")
-    if qdrant_client:
-        try:
-            # QdrantClient resource cleanup if any (usually not needed for client object itself)
-            pass
-        except Exception as e:
-            logger.error(f"Error during Qdrant client cleanup: {e}")
-    if llm_client:
-        try:
-            await llm_client.aclose()
-            logger.info("LLM client closed.")
-        except Exception as e:
-            logger.error(f"Error closing LLM client: {e}")
+    if llm_client: await llm_client.aclose(); logger.info("LLM client closed.")
+    if redis_cache: redis_cache.close(); logger.info("Redis cache client closed.")
     logger.info("RAG Query Service shutdown complete.")
 
 # --- Helper Functions ---
-def _format_context_for_llm(search_results: List[SearchResult]) -> str:
+def _generate_cache_key(prefix: str, query: str, top_k: int, search_type: str) -> str:
+    key_string = f"{prefix}:{query}:{top_k}:{search_type}"
+    return hashlib.md5(key_string.encode()).hexdigest()
+
+def _format_context_for_llm(search_results: List[SearchResult], max_context_results: int = 5) -> str:
     context_parts = []
-    for i, result in enumerate(search_results):
-        if result.text: # Only include results with text
-            context_parts.append(f"Source {i+1} (ID: {result.id}, Score: {result.score:.4f}):\n{result.text}\n")
-    if not context_parts:
-        return "No relevant information found in the knowledge base."
+    sorted_results = sorted(search_results, key=lambda x: x.score, reverse=True)
+    for i, result in enumerate(sorted_results[:max_context_results]):
+        if result.text:
+            context_parts.append(f"Source {i+1} (ID: {result.id}, Score: {result.score:.4f}, Method: {result.search_method}):\n{result.text}\n")
+    if not context_parts: return "No relevant information found in the knowledge base to answer the question."
     return "\n---\n".join(context_parts)
 
-async def _keyword_search_stub(query_keywords: List[str], filters: Optional[Dict] = None) -> List[Dict]:
-    """
-    Placeholder for keyword search functionality.
-    In a real implementation, this would query Qdrant or another search index
-    using the provided keywords and filters.
-    """
-    logger.info(f"Keyword search stub called with keywords: {query_keywords}, filters: {filters}")
-    # This could involve constructing a Qdrant filter for the 'keywords' metadata field
-    # or using Qdrant's full-text search capabilities if the schema is set up for it.
-    # Example (conceptual, not fully implemented for Qdrant full-text here):
-    # if qdrant_client and query_keywords:
-    #     try:
-    #         # This is a simplified example; Qdrant's full-text search might require specific setup
-    #         # or using a different approach like filtering on a 'keywords' array field.
-    #         # For filtering on an array:
-    #         # keyword_conditions = [qdrant_models.FieldCondition(key="metadata.keywords", match=qdrant_models.MatchValue(value=kw)) for kw in query_keywords]
-    #         # combined_filter = qdrant_models.Filter(should=keyword_conditions) # 'should' for OR logic
-    #         # results = qdrant_client.scroll(collection_name=QDRANT_COLLECTION_NAME, scroll_filter=combined_filter, limit=10, with_payload=True)
-    #         # return [hit.payload for hit in results[0]]
-    #         pass
-    #     except Exception as e:
-    #         logger.error(f"Error in keyword search stub: {e}")
-    return []
+def _extract_keywords_from_query(query: str, min_len: int = 3) -> List[str]:
+    words = re.findall(r'\b\w+\b', query.lower())
+    stop_words = set(["the", "a", "is", "in", "it", "to", "of", "and", "for", "on", "with", "this", "that", "an", "by", "as", "at", "or", "if", "not", "be", "was", "were", "am", "are", "has", "had", "do", "does", "did", "will", "would", "should", "can", "could", "may", "might", "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs", "from", "what", "who", "when", "where", "why", "how", "which", "what", "about", "what's", "tell", "give", "explain"])
+    return list(set(word for word in words if word not in stop_words and len(word) >= min_len and not word.isdigit()))
 
-async def _generate_llm_answer(query: str, context: str, model_name: str) -> Optional[str]:
-    if not llm_client:
-        logger.error("LLM client not initialized.")
-        return None
-
-    prompt = f"Based on the following context, please answer the question.\n\nContext:\n{context}\n\nQuestion: {query}\n\nAnswer:"
-
-    payload = {
-        "model": model_name,
-        "prompt": prompt,
-        "stream": False # For simplicity, get full response. True for streaming.
-        # "options": {"temperature": 0.7} # Add other Ollama options if needed
-    }
-
+async def _semantic_search(query_vector: List[float], top_k: int) -> List[SearchResult]:
+    if not qdrant_client: return []
     try:
-        logger.info(f"Sending request to LLM (model: {model_name}). Prompt length: {len(prompt)}")
+        hits = qdrant_client.search(collection_name=QDRANT_COLLECTION_NAME, query_vector=query_vector, limit=top_k, with_payload=True)
+        return [SearchResult(id=hit.id, score=hit.score, text=hit.payload.get("text") if hit.payload else None, metadata=hit.payload.get("metadata") if hit.payload else None, search_method="semantic") for hit in hits]
+    except Exception as e: logger.error(f"Semantic search error: {e}", exc_info=True); return []
+
+async def _keyword_filter_search(query_text: str, top_k: int) -> List[SearchResult]:
+    if not qdrant_client or not embedding_model : return []
+    query_keywords = _extract_keywords_from_query(query_text)
+    if not query_keywords: return []
+    logger.info(f"Keyword filter search with keywords: {query_keywords}")
+
+    keyword_conditions = [qdrant_models.FieldCondition(key="metadata.keywords", match=qdrant_models.MatchValue(value=kw)) for kw in query_keywords]
+    query_filter = qdrant_models.Filter(should=keyword_conditions)
+    try:
+        hits, _ = qdrant_client.scroll(collection_name=QDRANT_COLLECTION_NAME, scroll_filter=query_filter, limit=top_k * 5, with_payload=True, with_vectors=False)
+        results = []
+        for hit in hits:
+            num_matched_keywords = len(set(query_keywords).intersection(set(hit.payload.get("metadata", {}).get("keywords", [])))) if hit.payload else 0
+            keyword_score = (float(num_matched_keywords) / len(query_keywords)) if query_keywords and num_matched_keywords > 0 else 0.0
+            if keyword_score > 0: results.append(SearchResult(id=hit.id, score=keyword_score, text=hit.payload.get("text") if hit.payload else None, metadata=hit.payload.get("metadata") if hit.payload else None, search_method="keyword"))
+        results.sort(key=lambda x: x.score, reverse=True)
+        logger.info(f"Keyword filter search found {len(hits)} raw matches, returning top {top_k} after scoring.")
+        return results[:top_k]
+    except Exception as e: logger.error(f"Keyword filter search error: {e}", exc_info=True); return []
+
+async def _generate_llm_answer(query: str, context: str, model_name: str, query_request_details: QueryRequest) -> Optional[str]:
+    if not llm_client: return "LLM client not available for answer generation."
+
+    llm_answer_cache_key = _generate_cache_key(f"llm_answer:{LLM_MODEL_NAME}", query_request_details.query, query_request_details.top_k, context) # Cache key includes context hash
+    if not query_request_details.force_no_cache and redis_cache and redis_cache.is_available():
+        cached_llm_answer = redis_cache.get_string(llm_answer_cache_key)
+        if cached_llm_answer:
+            logger.info(f"Cache HIT for LLM answer: key='{llm_answer_cache_key}'")
+            return cached_llm_answer
+        logger.info(f"Cache MISS for LLM answer: key='{llm_answer_cache_key}'")
+
+    prompt = f"Based ONLY on the following context, please answer the question. If the context does not provide an answer, state that the information is not available in the provided context. Do not use any external knowledge.\n\nContext:\n{context}\n\nQuestion: {query}\n\nAnswer:"
+    payload = {"model": model_name, "prompt": prompt, "stream": False}
+    try:
         response = await llm_client.post("/api/generate", json=payload)
-        response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
-
-        response_data = response.json()
-        answer = response_data.get("response", "").strip()
-        logger.info(f"LLM (model: {model_name}) generated answer. Answer length: {len(answer)}")
+        response.raise_for_status()
+        answer = response.json().get("response", "").strip()
+        if answer and redis_cache and redis_cache.is_available() and not query_request_details.force_no_cache:
+            redis_cache.set_string(llm_answer_cache_key, answer, ttl_seconds=LLM_ANSWER_CACHE_TTL)
         return answer
-    except httpx.RequestError as e:
-        logger.error(f"LLM request error to {e.request.url!r}: {e}")
-    except httpx.HTTPStatusError as e:
-        logger.error(f"LLM HTTP error {e.response.status_code} while requesting {e.request.url!r}. Response: {e.response.text}")
     except Exception as e:
-        logger.error(f"Unexpected error during LLM answer generation: {e}", exc_info=True)
-
-    return None
-
+        logger.error(f"LLM answer generation error: {e}", exc_info=True)
+        return "Failed to generate an answer due to an internal error with the LLM service."
 
 # --- API Endpoints ---
 @app.post("/query", response_model=QueryResponse, tags=["Search"])
 async def perform_query(request: QueryRequest):
-    if not qdrant_client or not embedding_model:
-        raise HTTPException(status_code=503, detail="Service not ready. Search components failed to initialize.")
-    if request.generate_answer and not llm_client:
-        raise HTTPException(status_code=503, detail="Service not ready. LLM component failed to initialize.")
+    if not qdrant_client or not embedding_model: raise HTTPException(status_code=503, detail="Search components not ready.")
+    if request.generate_answer and not llm_client: raise HTTPException(status_code=503, detail="LLM component not ready.")
 
+    logger.info(f"Received query: '{request.query}', top_k: {request.top_k}, search_type: {request.search_type}, generate_answer: {request.generate_answer}, force_no_cache: {request.force_no_cache}")
 
-    logger.info(f"Received query: '{request.query}', top_k: {request.top_k}, generate_answer: {request.generate_answer}")
+    final_search_results: List[SearchResult] = []
+    cached_search_results_flag = False
 
-    try:
-        # 1. Encode the query
-        query_vector = embedding_model.encode(request.query, convert_to_tensor=False).tolist()
+    search_results_cache_key = _generate_cache_key("search_results", request.query, request.top_k, request.search_type)
+    if not request.force_no_cache and redis_cache and redis_cache.is_available():
+        cached_search_data = redis_cache.get_json(search_results_cache_key)
+        if cached_search_data:
+            final_search_results = [SearchResult(**item) for item in cached_search_data]
+            logger.info(f"Cache HIT for search results: key='{search_results_cache_key}'")
+            cached_search_results_flag = True
 
-        # 2. Search Qdrant
-        search_results_qdrant = qdrant_client.search(
-            collection_name=QDRANT_COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=request.top_k,
-            with_payload=True,
-        )
+    if not final_search_results: # Not in cache or cache unavailable/bypassed
+        logger.info(f"Cache MISS for search results or cache bypassed: key='{search_results_cache_key}'")
+        semantic_results: List[SearchResult] = []
+        keyword_search_results: List[SearchResult] = []
 
-        # 3. Format search results
-        formatted_search_results: List[SearchResult] = []
-        for hit in search_results_qdrant:
-            text_content = hit.payload.get("text", hit.payload.get("content")) if hit.payload else None
-            formatted_search_results.append(SearchResult(
-                id=hit.id,
-                score=hit.score,
-                text=text_content,
-                metadata=hit.payload.get("metadata") if hit.payload else None
-            ))
+        if request.search_type in ["semantic", "hybrid"]:
+            query_vector = embedding_model.encode(request.query, convert_to_tensor=False).tolist()
+            semantic_results = await _semantic_search(query_vector, request.top_k)
+        if request.search_type in ["keyword", "hybrid"]:
+            keyword_search_results = await _keyword_filter_search(request.query, request.top_k)
 
-        logger.info(f"Found {len(formatted_search_results)} search results for query '{request.query}'")
+        combined_results_dict: Dict[Union[int, str, uuid.UUID], SearchResult] = {}
+        if request.search_type == "semantic":
+            for res in semantic_results: combined_results_dict[res.id] = res
+        elif request.search_type == "keyword":
+            for res in keyword_search_results: combined_results_dict[res.id] = res
+        elif request.search_type == "hybrid":
+            for res in semantic_results: combined_results_dict[res.id] = res
+            for kres in keyword_search_results:
+                if kres.id in combined_results_dict:
+                    combined_results_dict[kres.id].score = max(combined_results_dict[kres.id].score, kres.score) + 0.1
+                    combined_results_dict[kres.id].search_method = "hybrid_boosted"
+                else: combined_results_dict[kres.id] = kres
 
-        # 4. Generate answer using LLM if requested
-        llm_answer = None
-        llm_model_used = None
-        if request.generate_answer:
-            if not formatted_search_results:
-                logger.info("No search results found, cannot generate contextual answer.")
-                llm_answer = "I couldn't find any relevant information to answer your question."
-            else:
-                context_for_llm = _format_context_for_llm(formatted_search_results)
-                llm_answer = await _generate_llm_answer(request.query, context_for_llm, LLM_MODEL_NAME)
-                llm_model_used = LLM_MODEL_NAME
-                if llm_answer is None: # If LLM call failed
-                    llm_answer = "There was an issue generating an answer. Please try again later."
+        final_search_results = sorted(list(combined_results_dict.values()), key=lambda x: x.score, reverse=True)[:request.top_k]
 
-        return QueryResponse(
-            query=request.query,
-            search_results=formatted_search_results,
-            answer=llm_answer,
-            llm_model_used=llm_model_used
-        )
+        if redis_cache and redis_cache.is_available() and not request.force_no_cache and final_search_results:
+            redis_cache.set_json(search_results_cache_key, [res.model_dump() for res in final_search_results], ttl_seconds=SEARCH_RESULTS_CACHE_TTL)
 
-    except Exception as e:
-        logger.error(f"Error processing query '{request.query}': {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"An error occurred while processing the query: {str(e)}")
+    llm_answer: Optional[str] = None
+    llm_model_used: Optional[str] = LLM_MODEL_NAME if request.generate_answer else None
+    cached_llm_answer_flag = False
 
+    if request.generate_answer:
+        context_for_llm = _format_context_for_llm(final_search_results, max_context_results=request.top_k)
+        # Note: _generate_llm_answer now handles its own caching logic internally
+        llm_answer = await _generate_llm_answer(request.query, context_for_llm, LLM_MODEL_NAME, request)
+        # Check if the answer came from cache by seeing if it's different from a cache miss scenario's default error message
+        if redis_cache and redis_cache.is_available() and not request.force_no_cache:
+             # Re-check cache for LLM answer to determine if this specific call resulted in a cache hit for the answer
+            llm_answer_cache_key = _generate_cache_key(f"llm_answer:{LLM_MODEL_NAME}", request.query, request.top_k, context_for_llm)
+            if redis_cache.get_string(llm_answer_cache_key) == llm_answer : # Check if what we have is from cache
+                 # This logic is slightly complex; simpler if _generate_llm_answer returned a tuple (answer, was_cached)
+                 # For now, assume if search results were cached, and answer exists, it might have been part of a fully cached response
+                 # The QueryResponse.cached_response will primarily reflect search_results caching.
+                 pass # The internal caching in _generate_llm_answer handles it.
+
+    return QueryResponse(
+        query=request.query,
+        search_results=final_search_results,
+        answer=llm_answer,
+        llm_model_used=llm_model_used,
+        cached_response=cached_search_results_flag # True if search_results came from cache
+    )
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    # Basic health check, can be expanded to check component status
-    q_ready = bool(qdrant_client)
-    em_ready = bool(embedding_model)
-    llm_ready = bool(llm_client) # Check if llm_client is initialized
-
-    # Optionally, try a lightweight check to Ollama if llm_client is initialized
-    ollama_service_healthy = False
-    if llm_ready:
+    q_ready = False
+    if qdrant_client:
         try:
-            # A lightweight request to Ollama's root or /api/tags
+            # A more reliable check for Qdrant readiness might involve trying to get collection info
+            # This is a placeholder, actual readiness might need a lightweight API call to qdrant
+            qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME) # Re-check collection
+            q_ready = True
+        except Exception:
+            q_ready = False # Could not get collection, assume not fully ready
+
+    em_ready = bool(embedding_model)
+    llm_cli_ready = bool(llm_client)
+    redis_ready = bool(redis_cache and redis_cache.is_available())
+    ollama_service_healthy = False
+    if llm_cli_ready:
+        try:
             response = await llm_client.get("/")
             ollama_service_healthy = response.status_code == 200
-        except Exception:
-            ollama_service_healthy = False # Could not connect or other error
+        except Exception: ollama_service_healthy = False
 
-    if q_ready and em_ready and llm_ready and ollama_service_healthy:
-        status = "healthy"
-    else:
-        status = "degraded"
-
-    return {
-        "status": status,
-        "components": {
-            "qdrant_initialized": q_ready,
-            "embedding_model_initialized": em_ready,
-            "llm_client_initialized": llm_ready,
-            "ollama_service_accessible": ollama_service_healthy
-        }
-    }
-
+    status = "healthy" if q_ready and em_ready and llm_cli_ready and ollama_service_healthy and redis_ready else "degraded"
+    return {"status": status, "components": {"qdrant_accessible": q_ready, "embedding_model_loaded": em_ready, "llm_client_initialized": llm_cli_ready, "ollama_service_accessible": ollama_service_healthy, "redis_cache_connected": redis_ready}}
 
 if __name__ == "__main__":
     import uvicorn
     SERVICE_PORT = int(get_config_value("RAG_SERVICE_PORT", default=8001))
-    SERVICE_HOST = get_config_value("RAG_SERVICE_HOST", default="0.0.0.0") # Host for the service itself
-
-    # Example: Set Qdrant host for local testing if not done via global env vars
-    # os.environ["QDRANT_HOST"] = "localhost"
-    # Re-initialize constants if you set env vars here for __main__
-    # QDRANT_HOST = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
-
+    SERVICE_HOST = get_config_value("RAG_SERVICE_HOST", default="0.0.0.0")
     logger.info(f"Starting RAG Query Service on {SERVICE_HOST}:{SERVICE_PORT}")
-    logger.info(f"Configured Qdrant: host={QDRANT_HOST}, port={QDRANT_PORT}, collection={QDRANT_COLLECTION_NAME}")
-    logger.info(f"Configured Embedding Model: name={EMBEDDING_MODEL_NAME}, device={MODEL_DEVICE}")
-
     uvicorn.run(app, host=SERVICE_HOST, port=SERVICE_PORT)
-
-# To run this:
-# 1. Ensure Qdrant is running and the collection exists (or add creation logic).
-#    Example Qdrant Docker: docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-# 2. Set environment variables if defaults are not suitable:
-#    export QDRANT_HOST="your_qdrant_host"
-#    export QDRANT_COLLECTION_NAME="your_collection"
-#    export EMBEDDING_MODEL_NAME="sentence-transformers/all-mpnet-base-v2" # if different
-#    export RAG_SERVICE_PORT=8001
-# 3. python Scripts/services/rag_query_service.py
-
-# Example curl to test (after documents are indexed in Qdrant):
-# curl -X POST http://localhost:8001/query \
-# -H "Content-Type: application/json" \
-# -d '{"query": "What is FastAPI?", "top_k": 3}'

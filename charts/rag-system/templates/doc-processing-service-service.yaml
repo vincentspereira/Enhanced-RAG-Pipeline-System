@@ -1,0 +1,18 @@
+{{- if .Values.docProcessingService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.docProcessingService "context" .) }}
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.docProcessingService.name }}
+spec:
+  type: {{ .Values.docProcessingService.service.type }}
+  ports:
+    - port: {{ .Values.docProcessingService.service.port }}
+      targetPort: {{ .Values.docProcessingService.containerPort }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "rag-system.selectorLabelsComponent" (dict "componentName" .Values.docProcessingService.name "context" .) | nindent 4 }}
+{{- end }}

@@ -130,9 +130,83 @@ n8n workflows can, in turn, call APIs exposed by our application services (e.g.,
     *   **Synchronous (Wait Mode):** Some n8n nodes (like "Execute Workflow") can run other workflows and wait for their completion. Webhook responses can also be configured to return data from the workflow.
     *   **Asynchronous (Callback/Polling):** For long-running workflows, n8n could make a final HTTP request back to one of our application's API endpoints to signal completion or provide results. Alternatively, our application might need to poll an n8n API for workflow status if available (this is less common for webhook-triggered workflows).
 *   **Security:**
-    *   Protect n8n webhook URLs if they are publicly accessible.
-    *   Use HTTPS for n8n, especially in production.
-    *   If n8n calls internal application APIs, ensure appropriate network policies and authentication are in place.
+    *   **Webhook Security:** Protect n8n webhook URLs. If n8n is exposed publicly, consider using hard-to-guess URLs or an additional authentication layer in front of n8n if it doesn't natively support per-webhook authentication easily. For internal calls (e.g., from another Docker container in the same network), this is less of an issue.
+    *   **API Key for Callbacks:** When n8n calls back into your application's APIs (e.g., the `internal-api-gateway`), ensure it uses an API key. Store this API key securely in n8n's built-in credential manager.
+        *   In the n8n "HTTP Request" node, under "Authentication", select "Header Auth".
+        *   Set the "Name" to `X-API-Key` (or your gateway's API key header name).
+        *   For the "Value", click "Add Credential" -> "Header Auth" and create a new credential storing your application's API key.
+    *   **Network Policies:** If running in Kubernetes, use network policies to restrict which services can call n8n and which services n8n can call.
+    *   **HTTPS:** Always use HTTPS for n8n in production.
+
+### Example: n8n Workflow Calling Back to Application API
+
+Let's extend the "Document Ingestion and Notification" example. Suppose after the `doc-processing-service` is called, we want n8n to call a status update endpoint in our application.
+
+**Workflow Steps in n8n:**
+
+1.  **Webhook Trigger:** (As before) Receives initial data (e.g., `{"doc_id": "xyz123", "callback_url": "http://internal-api-gateway/api/v1/workflow_status_update"}`).
+2.  **Call Document Processing Service:** (As before) n8n calls `http://doc-processing-service:8002/process_document`. Let's assume this service responds with `{"status": "processing_started", "internal_doc_id": "uuid-abc"}`.
+3.  **Set Variables (Optional but good practice):** Use a "Set" node in n8n to extract `internal_doc_id` from the previous step's output.
+4.  **HTTP Request Node (Callback to App):**
+    *   **URL:** Use the `callback_url` received in the initial webhook trigger (e.g., `{{ $json.body.callback_url }}`).
+    *   **Method:** POST
+    *   **Authentication:** Header Auth (as described above, using an API key for your `internal-api-gateway`).
+    *   **Body (JSON):**
+        ```json
+        {
+          "original_doc_id": "{{ $json.body.doc_id }}",
+          "processed_doc_id": "{{ $item.json.internal_doc_id }}", // From Set node or step 2 output
+          "status": "document_processing_invoked",
+          "timestamp": "{{ $now.toISO() }}"
+        }
+        ```
+    *   This node calls back to your application to log that processing for `doc_id` has been initiated by n8n.
+
+### Passing Complex Parameters to n8n Webhooks
+
+When triggering an n8n workflow via its webhook, you can send a JSON payload in the request body. n8n automatically parses this JSON.
+
+*   **Example Payload from your Application:**
+    ```json
+    {
+      "document_url": "s3://mybucket/docs/report.pdf",
+      "priority": "high",
+      "processing_options": {
+        "ocr_enabled": true,
+        "extract_tables": true
+      },
+      "notification_config": {
+        "email_to": ["user1@example.com", "admin@example.com"],
+        "slack_channel": "#document-alerts"
+      },
+      "callback_url": "http://my-app/api/n8n_callback/workflow123"
+    }
+    ```
+*   **Accessing in n8n:**
+    *   In n8n nodes (like "Set", "IF", "HTTP Request"), you can access these using expressions:
+        *   `{{ $json.body.document_url }}`
+        *   `{{ $json.body.priority }}`
+        *   `{{ $json.body.processing_options.ocr_enabled }}`
+        *   `{{ $json.body.notification_config.email_to[0] }}` (to get the first email)
+
+### Retrieving Results/Status from n8n Workflows
+
+1.  **Respond to Webhook Node (Synchronous-like):**
+    *   If your n8n workflow is relatively short and you need an immediate response, you can use the "Respond to Webhook" node as the *last* step (or in an error branch).
+    *   This node allows you to construct a custom JSON response that will be sent back as the HTTP response to the initial webhook call.
+    *   **Limitation:** The initial HTTP request that triggered the workflow will hang until the "Respond to Webhook" node is executed or the workflow times out. Not suitable for very long-running workflows.
+    *   **Example:** An n8n workflow that just validates input and returns "validation_ok" or "validation_failed".
+
+2.  **Callback URL (Asynchronous):**
+    *   This is the most common pattern for longer-running workflows.
+    *   The initial trigger payload from your application includes a `callback_url` (an endpoint in your application).
+    *   Once the n8n workflow (or a significant part of it) completes, an n8n "HTTP Request" node makes a call to this `callback_url`, sending status, results, or any relevant data.
+    *   Your application needs an endpoint to receive these callbacks. This makes the interaction asynchronous.
+
+3.  **Polling n8n API for Workflow Execution Status (Generally Complex for Webhook Triggers):**
+    *   n8n has a REST API. However, for workflows triggered by a simple webhook URL (not via n8n's API that might return an execution ID), getting a persistent, pollable *execution ID* for that specific run can be tricky or might require specific n8n setup (e.g., immediately writing the execution ID to an external store that your app can query).
+    *   If you trigger workflows via n8n's own API endpoints (e.g., `POST /api/v1/workflows/{id}/activate` to run a saved workflow by its n8n ID), it might return an execution ID that can then be polled using `GET /api/v1/executions/{execution_id}`.
+    *   **Recommendation:** For most webhook-triggered scenarios, the callback URL pattern is more straightforward for asynchronous status updates. If precise polling is needed, triggering via n8n's own API and managing execution IDs would be the way, but this is a more advanced integration.
 
 ## 5. Starting Point
 

@@ -11,9 +11,16 @@ import json # For serializing cache data
 import time # For latency timing
 import numpy as np
 
-from qdrant_client import QdrantClient, models as qdrant_models
+# Vector Store and Embedding Model Imports (similar to doc_processing_service)
 from sentence_transformers import SentenceTransformer
 import torch # For device selection
+from Scripts.storage.vector_store_base import VectorStoreBase, SearchResult as VectorStoreSearchResult # Use the SearchResult from base
+from Scripts.storage.qdrant_vector_store import QdrantVectorStore
+from Scripts.storage.weaviate_vector_store import WeaviateVectorStore
+from Scripts.storage.milvus_vector_store import MilvusVectorStore
+from Scripts.storage.chroma_vector_store import ChromaVectorStore
+from Scripts.storage.faiss_vector_store import FaissVectorStore
+
 from prometheus_fastapi_instrumentator import Instrumentator, Counter, Histogram
 from rank_bm25 import BM25Okapi # For BM25 scoring
 
@@ -71,9 +78,8 @@ RRF_K_CONSTANT = int(get_config_value("RRF_K_CONSTANT", default=60)) # RRF k con
 
 
 # --- Global Variables ---
-# ... (app, clients, redis_cache as before) ...
 app = FastAPI(title="RAG Query Service")
-qdrant_client: Optional[QdrantClient] = None
+vector_store: Optional[VectorStoreBase] = None # Unified vector store instance
 embedding_model: Optional[SentenceTransformer] = None
 llm_client: Optional[httpx.AsyncClient] = None
 redis_cache: Optional[RedisCacheManager] = None
@@ -99,49 +105,113 @@ class QueryRequest(BaseModel):
     # search_type: str = Field("hybrid", description="Type of search: 'semantic', 'keyword', or 'hybrid'.") # Hybrid is now default
     generate_answer: bool = Field(True, description="Whether to generate a natural language answer using an LLM.")
     force_no_cache: bool = Field(False, description="Set to true to bypass cache for this request.")
-
-class SearchResult(BaseModel):
-    # ... (as before, ensure id can be UUID) ...
-    id: Union[int, str, uuid.UUID]
-    score: float
-    text: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    search_method: Optional[str] = None
+    filters: Optional[Dict[str, Any]] = Field(None, description="Metadata filters for vector search.")
 
 
+# Using SearchResult from vector_store_base
 class QueryResponse(BaseModel):
-    # ... (as before) ...
     query: str
-    search_results: List[SearchResult]
+    search_results: List[VectorStoreSearchResult] # Changed from local SearchResult
     answer: Optional[str] = None
     llm_model_used: Optional[str] = None
     cached_response: bool = Field(False, description="Indicates if the main part of the response (search results or full answer) was served from cache.")
 
 
 # --- Service Initialization and Shutdown ---
-# ... (startup_event and shutdown_event as before, ensure Prometheus instrumentation is present) ...
 @app.on_event("startup")
 async def startup_event():
-    global qdrant_client, embedding_model, llm_client, redis_cache
+    global vector_store, embedding_model, llm_client, redis_cache
     logger.info("RAG Query Service starting up...")
-    try:
-        qdrant_client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY if QDRANT_API_KEY else None)
-        qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
-        logger.info(f"Qdrant connected: {QDRANT_COLLECTION_NAME}")
-    except Exception as e: logger.error(f"Qdrant connection error: {e}", exc_info=True); qdrant_client = None
+
+    # Initialize Embedding Model First
     try:
         device_to_use = MODEL_DEVICE if MODEL_DEVICE == "cpu" or torch.cuda.is_available() else "cpu"
-        if MODEL_DEVICE == "cuda" and device_to_use == "cpu": logger.warning("CUDA specified but not available. Falling back to CPU for embedding model.")
+        if MODEL_DEVICE == "cuda" and device_to_use == "cpu":
+            logger.warning("CUDA specified but not available. Falling back to CPU for embedding model.")
         embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME, device=device_to_use)
         logger.info(f"Embedding model loaded: {EMBEDDING_MODEL_NAME} on {device_to_use}. Dim: {embedding_model.get_sentence_embedding_dimension()}")
-    except Exception as e: logger.error(f"Failed to load embedding model: {e}", exc_info=True); embedding_model = None
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {e}", exc_info=True)
+        embedding_model = None
+
+    # Initialize Vector Store
+    if embedding_model:
+        provider = get_config_value("VECTOR_STORE_PROVIDER", yaml_path="vector_store.provider", default="qdrant")
+        collection_name = get_config_value(f"VECTOR_STORE_{provider.upper()}_COLLECTION_NAME",
+                                           yaml_path=f"vector_store.{provider}.collection_name",
+                                           default="documents")
+        vector_size = embedding_model.get_sentence_embedding_dimension()
+        distance_metric = get_config_value(f"VECTOR_STORE_{provider.upper()}_DISTANCE",
+                                           yaml_path=f"vector_store.{provider}.distance_metric",
+                                           default="Cosine")
+
+        logger.info(f"Initializing vector store provider: {provider} for collection '{collection_name}'")
+        global vector_store # Ensure we're assigning to the global
+        try:
+            if provider == "qdrant":
+                host = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
+                port = int(get_config_value("QDRANT_PORT", yaml_path="vector_store.qdrant.port", default=6333))
+                api_key = get_config_value("QDRANT_API_KEY", yaml_path="vector_store.qdrant.api_key")
+                vector_store = QdrantVectorStore(host=host, port=port, api_key=api_key)
+            elif provider == "weaviate":
+                url = get_config_value("WEAVIATE_URL", yaml_path="vector_store.weaviate.url", default="http://localhost:8080")
+                api_key = get_config_value("WEAVIATE_API_KEY", yaml_path="vector_store.weaviate.api_key")
+                vector_store = WeaviateVectorStore(url=url, api_key=api_key)
+                collection_name = get_config_value(f"WEAVIATE_CLASS_NAME", yaml_path=f"vector_store.weaviate.class_name", default="Document")
+            elif provider == "milvus":
+                host = get_config_value("MILVUS_HOST", yaml_path="vector_store.milvus.host", default="localhost")
+                port = get_config_value("MILVUS_PORT", yaml_path="vector_store.milvus.port", default="19530")
+                vector_store = MilvusVectorStore(host=host, port=port)
+            elif provider == "chroma":
+                chroma_path = get_config_value("CHROMA_PATH", yaml_path="vector_store.chroma.path")
+                chroma_host = get_config_value("CHROMA_HOST", yaml_path="vector_store.chroma.host")
+                chroma_port = get_config_value("CHROMA_PORT", yaml_path="vector_store.chroma.port")
+                if chroma_host and chroma_port:
+                    vector_store = ChromaVectorStore(host=chroma_host, port=int(chroma_port))
+                elif chroma_path:
+                    vector_store = ChromaVectorStore(path=chroma_path)
+                else:
+                    vector_store = ChromaVectorStore()
+            elif provider == "faiss":
+                index_path = get_config_value("FAISS_INDEX_PATH", yaml_path="vector_store.faiss.index_file_path", default="data/faiss_index.bin")
+                metadata_path = get_config_value("FAISS_METADATA_PATH", yaml_path="vector_store.faiss.metadata_file_path", default="data/faiss_metadata.pkl")
+                vector_store = FaissVectorStore(index_file_path=index_path, metadata_file_path=metadata_path)
+            else:
+                logger.error(f"Unsupported vector store provider: {provider}")
+                raise ValueError(f"Unsupported vector store provider: {provider}")
+
+            if vector_store:
+                # For RAG Query service, we assume collection is already created and initialized by Doc Processing.
+                # We might just need to ensure it's loaded or accessible.
+                # A light check like get_collection_info or health_check is good.
+                if not await vector_store.health_check():
+                     logger.error(f"Vector store provider '{provider}' is not healthy.")
+                     vector_store = None # Mark as unusable
+                else:
+                    logger.info(f"Vector store '{provider}' initialized and healthy for collection '{collection_name}'.")
+            else:
+                 logger.error(f"Vector store provider '{provider}' could not be instantiated.")
+        except Exception as e:
+            logger.error(f"Failed to initialize vector store provider '{provider}': {e}", exc_info=True)
+            vector_store = None
+    else:
+        logger.error("Embedding model failed to load. Vector store initialization skipped.")
+        vector_store = None
+
     llm_client = httpx.AsyncClient(base_url=OLLAMA_API_URL, timeout=httpx.Timeout(120.0))
     logger.info(f"LLM client for Ollama at {OLLAMA_API_URL} initialized.")
+
     redis_cache = RedisCacheManager(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB_RAG)
-    if redis_cache.is_available(): logger.info(f"Redis cache connected at {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB_RAG}")
-    else: logger.warning(f"Redis cache NOT available at {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB_RAG}. Service will run without caching.")
-    if not qdrant_client or not embedding_model: logger.error("CRITICAL: Qdrant or Embedding Model failed initialization.")
-    else: logger.info("RAG Query Service core components (Qdrant, Embedding Model) initialized.")
+    if redis_cache.is_available():
+        logger.info(f"Redis cache connected at {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB_RAG}")
+    else:
+        logger.warning(f"Redis cache NOT available at {REDIS_HOST}:{REDIS_PORT}, DB: {REDIS_DB_RAG}. Service will run without caching.")
+
+    if not vector_store or not embedding_model:
+        logger.error("CRITICAL: Vector Store or Embedding Model failed initialization.")
+    else:
+        logger.info("RAG Query Service core components (Vector Store, Embedding Model) initialized.")
+
     instrumentator = Instrumentator(should_group_status_codes=True, should_instrument_requests_inprogress=True, excluded_handlers=["/health", "/metrics"], inprogress_name="rag_inprogress_requests",inprogress_labels=True,)
     instrumentator.instrument(app).expose(app)
     if not isinstance(CACHE_HITS_COUNTER, DummyCounter):
@@ -151,9 +221,20 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    global vector_store, llm_client, redis_cache # Added vector_store
     logger.info("RAG Query Service shutting down...")
-    if llm_client: await llm_client.aclose(); logger.info("LLM client closed.")
-    if redis_cache: redis_cache.close(); logger.info("Redis cache client closed.")
+    if vector_store:
+        try:
+            await vector_store.close()
+            logger.info("Vector store connection closed.")
+        except Exception as e:
+            logger.error(f"Error closing vector store: {e}", exc_info=True)
+    if llm_client:
+        await llm_client.aclose()
+        logger.info("LLM client closed.")
+    if redis_cache:
+        redis_cache.close()
+        logger.info("Redis cache client closed.")
     logger.info("RAG Query Service shutdown complete.")
 
 # --- Helper Functions ---
@@ -162,14 +243,18 @@ def _generate_cache_key(prefix: str, query: str, top_k: int, search_type_or_cont
     key_string = f"{prefix}:{query}:{top_k}:{search_type_or_context}" # search_type_or_context can be context for LLM cache
     return hashlib.md5(key_string.encode()).hexdigest()
 
-def _format_context_for_llm(search_results: List[SearchResult], max_context_results: int = 5) -> str:
-    # ... (as before, ensure search_method is included in context if available) ...
+def _format_context_for_llm(search_results: List[VectorStoreSearchResult], max_context_results: int = 5) -> str: # Type hint updated
     context_parts = []
+    # Assuming higher score is better for sorting. This might need adjustment based on actual scores from stores (distance vs similarity).
+    # For now, let's assume vector_store_base.SearchResult score is normalized (higher is better).
     sorted_results = sorted(search_results, key=lambda x: x.score, reverse=True)
     for i, result in enumerate(sorted_results[:max_context_results]):
-        if result.text:
-            method_info = f", Method: {result.search_method}" if result.search_method else ""
-            context_parts.append(f"Source {i+1} (ID: {result.id}, Score: {result.score:.4f}{method_info}):\n{result.text}\n")
+        text_content = result.payload.get("text") if result.payload else None
+        # search_method is not part of VectorStoreSearchResult.payload by default.
+        # It was part of the local SearchResult. For now, omitting it from context string.
+        # If needed, individual vector store impls could add it to payload.metadata.
+        if text_content:
+            context_parts.append(f"Source {i+1} (ID: {result.id}, Score: {result.score:.4f}):\n{text_content}\n")
     if not context_parts: return "No relevant information found in the knowledge base to answer the question."
     return "\n---\n".join(context_parts)
 
@@ -180,21 +265,49 @@ def _tokenize_text_for_bm25(text: str) -> List[str]:
     # Optional: Add stop word removal here if desired for BM25 corpus
     return words
 
-async def _semantic_search(query_vector: List[float], top_k: int) -> List[SearchResult]:
-    # ... (as before, records QDRANT_QUERY_LATENCY) ...
-    if not qdrant_client: return []
+async def _semantic_search_with_vector_store(
+    query_vector: List[float],
+    top_k: int,
+    filters: Optional[Dict[str, Any]] = None
+) -> List[VectorStoreSearchResult]: # Return type updated
+    if not vector_store:
+        logger.error("Vector store not initialized for semantic search.")
+        return []
+
     start_time = time.time()
+    provider = get_config_value("VECTOR_STORE_PROVIDER", yaml_path="vector_store.provider", default="qdrant")
+    collection_name_cfg_key = f"vector_store.{provider}.collection_name"
+    if provider == "weaviate":
+        collection_name_cfg_key = f"vector_store.weaviate.class_name"
+    target_collection_name = get_config_value(f"VECTOR_STORE_{provider.upper()}_COLLECTION_NAME",
+                                           yaml_path=collection_name_cfg_key,
+                                           default="documents")
     try:
-        hits = qdrant_client.search(collection_name=QDRANT_COLLECTION_NAME, query_vector=query_vector, limit=top_k, with_payload=True)
-        return [SearchResult(id=hit.id, score=hit.score, text=hit.payload.get("text") if hit.payload else None, metadata=hit.payload.get("metadata") if hit.payload else None, search_method="semantic") for hit in hits]
-    except Exception as e: logger.error(f"Semantic search error: {e}", exc_info=True); return []
+        # The search method from VectorStoreBase is used here
+        # It's assumed that the SearchResult from base includes text and metadata in its payload if available
+        results = await vector_store.search(
+            collection_name=target_collection_name,
+            query_vector=query_vector,
+            top_k=top_k,
+            filters=filters,
+            with_vectors=False # Usually not needed for RAG context
+        )
+        # Post-process to add search_method if needed, or ensure base SearchResult can hold it
+        # For now, the base SearchResult doesn't have 'search_method'.
+        # We can create new local SearchResult objects if we need that field specifically for hybrid logic.
+        # However, the QueryResponse is already updated to List[VectorStoreSearchResult].
+        # Let's assume for now that the distinction for 'semantic' is implicit or handled by RRF logic.
+        return results
+    except Exception as e:
+        logger.error(f"Semantic search error with provider {provider}: {e}", exc_info=True)
+        return []
     finally:
         latency = time.time() - start_time
-        QDRANT_QUERY_LATENCY.labels(query_type="semantic").observe(latency)
+        # Update Prometheus metric label to be generic or provider-specific
+        QDRANT_QUERY_LATENCY.labels(query_type=f"semantic_{provider}").observe(latency)
 
 
 async def _generate_llm_answer(query: str, context: str, model_name: str, query_request_details: QueryRequest) -> Optional[str]:
-    # ... (as before, records OLLAMA_LLM_LATENCY and uses cache) ...
     if not llm_client: return "LLM client not available for answer generation."
     llm_answer_cache_key = _generate_cache_key(f"llm_answer:{LLM_MODEL_NAME}", query_request_details.query, query_request_details.top_k, context)
     if not query_request_details.force_no_cache and redis_cache and redis_cache.is_available():
@@ -219,21 +332,32 @@ async def _generate_llm_answer(query: str, context: str, model_name: str, query_
 # --- API Endpoints ---
 @app.post("/query", response_model=QueryResponse, tags=["Search"])
 async def perform_query(request: QueryRequest):
-    if not qdrant_client or not embedding_model: raise HTTPException(status_code=503, detail="Search components not ready.")
-    if request.generate_answer and not llm_client: raise HTTPException(status_code=503, detail="LLM component not ready.")
+    # Use unified vector_store now
+    if not vector_store or not embedding_model:
+        raise HTTPException(status_code=503, detail="Search components (vector store or embedding model) not ready.")
+    if request.generate_answer and not llm_client:
+        raise HTTPException(status_code=503, detail="LLM component not ready.")
 
-    logger.info(f"Received query: '{request.query}', top_k: {request.top_k}, generate_answer: {request.generate_answer}, force_no_cache: {request.force_no_cache}")
+    logger.info(f"Received query: '{request.query}', top_k: {request.top_k}, generate_answer: {request.generate_answer}, filters: {request.filters}, force_no_cache: {request.force_no_cache}")
 
-    final_search_results: List[SearchResult] = []
+    final_search_results: List[VectorStoreSearchResult] = [] # Use VectorStoreSearchResult
     cached_search_results_flag = False
 
-    # Using a more specific cache key for hybrid search results
-    search_results_cache_key = _generate_cache_key("hybrid_search_results_v2", request.query, SEMANTIC_SEARCH_TOP_K_CANDIDATES, "semantic_bm25_rrf")
+    # Cache key should ideally include filters if they affect the semantic search part significantly
+    # For simplicity, current key does not include request.filters. This could be an enhancement.
+    cache_context_for_key = f"semantic_bm25_rrf_filters_{json.dumps(request.filters, sort_keys=True) if request.filters else 'None'}"
+    search_results_cache_key = _generate_cache_key(
+        "hybrid_search_results_v3", # incremented version due to filter addition
+        request.query,
+        SEMANTIC_SEARCH_TOP_K_CANDIDATES,
+        cache_context_for_key
+    )
 
     if not request.force_no_cache and redis_cache and redis_cache.is_available():
         cached_search_data = redis_cache.get_json(search_results_cache_key)
         if cached_search_data:
-            final_search_results = [SearchResult(**item) for item in cached_search_data]
+            # Ensure items are parsed into VectorStoreSearchResult
+            final_search_results = [VectorStoreSearchResult(**item) for item in cached_search_data]
             logger.info(f"Cache HIT for combined search results: key='{search_results_cache_key}'")
             CACHE_HITS_COUNTER.labels(cache_type="search_results_combined").inc()
             cached_search_results_flag = True
@@ -243,15 +367,23 @@ async def perform_query(request: QueryRequest):
 
     if not final_search_results: # Not in cache or cache unavailable/bypassed
         query_vector = embedding_model.encode(request.query, convert_to_tensor=False).tolist()
-        # 1. Get semantic candidates
-        semantic_candidates = await _semantic_search(query_vector, SEMANTIC_SEARCH_TOP_K_CANDIDATES)
+
+        # 1. Get semantic candidates using the new abstracted search
+        semantic_candidates = await _semantic_search_with_vector_store(
+            query_vector,
+            SEMANTIC_SEARCH_TOP_K_CANDIDATES,
+            filters=request.filters # Pass filters to semantic search
+        )
 
         if not semantic_candidates:
-            logger.info("No semantic candidates found.")
+            logger.info("No semantic candidates found from vector store.")
         else:
-            logger.info(f"Retrieved {len(semantic_candidates)} semantic candidates for BM25.")
-            candidate_texts = [res.text for res in semantic_candidates if res.text]
-            candidate_ids_map = {idx: res.id for idx, res in enumerate(semantic_candidates) if res.text} # Map BM25 corpus index to original ID
+            logger.info(f"Retrieved {len(semantic_candidates)} semantic candidates for BM25 re-ranking.")
+
+            # Adapt to VectorStoreSearchResult which has payload.text and payload.metadata
+            candidate_texts = [res.payload.get("text") for res in semantic_candidates if res.payload and res.payload.get("text")]
+            # Ensure IDs used for mapping are consistent (original doc IDs)
+            candidate_ids_map = {idx: res.id for idx, res in enumerate(semantic_candidates) if res.payload and res.payload.get("text")}
 
             if candidate_texts:
                 tokenized_corpus = [_tokenize_text_for_bm25(text) for text in candidate_texts]
@@ -297,14 +429,16 @@ async def perform_query(request: QueryRequest):
 
                 final_search_results = []
                 for doc_id, rrf_score in rrf_scores.items():
-                    original_result = temp_results_map.get(doc_id)
+                    original_result = temp_results_map.get(doc_id) # original_result is a VectorStoreSearchResult
                     if original_result:
-                        final_search_results.append(SearchResult(
+                        # Create new VectorStoreSearchResult for the final list
+                        # The 'payload' will contain text and metadata from the original result.
+                        final_search_results.append(VectorStoreSearchResult(
                             id=original_result.id,
                             score=rrf_score, # Use RRF score
-                            text=original_result.text,
-                            metadata=original_result.metadata,
-                            search_method="hybrid_rrf"
+                            payload=original_result.payload, # Keep original payload (text, metadata)
+                            vector=original_result.vector # Keep original vector if present
+                            # 'search_method' is not part of VectorStoreSearchResult. If needed, add to payload.metadata.
                         ))
 
                 final_search_results.sort(key=lambda x: x.score, reverse=True)
@@ -334,20 +468,43 @@ async def perform_query(request: QueryRequest):
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    # ... (health check as before) ...
-    q_ready = False
-    if qdrant_client:
-        try: qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME); q_ready = True
-        except Exception: q_ready = False
     em_ready = bool(embedding_model)
     llm_cli_ready = bool(llm_client)
     redis_ready = bool(redis_cache and redis_cache.is_available())
+
+    vs_ready = False
+    vs_provider = "N/A"
+    if vector_store:
+        vs_ready = await vector_store.health_check()
+        vs_provider = get_config_value("VECTOR_STORE_PROVIDER", yaml_path="vector_store.provider", default="unknown")
+
     ollama_service_healthy = False
     if llm_cli_ready:
-        try: response = await llm_client.get("/"); ollama_service_healthy = response.status_code == 200
-        except Exception: ollama_service_healthy = False
-    status = "healthy" if q_ready and em_ready and llm_cli_ready and ollama_service_healthy and redis_ready else "degraded"
-    return {"status": status, "components": {"qdrant_accessible": q_ready, "embedding_model_loaded": em_ready, "llm_client_initialized": llm_cli_ready, "ollama_service_accessible": ollama_service_healthy, "redis_cache_connected": redis_ready}}
+        try:
+            response = await llm_client.get("/") # Ollama root path usually returns "Ollama is running"
+            ollama_service_healthy = response.status_code == 200
+        except Exception:
+            ollama_service_healthy = False
+
+    overall_status = "healthy"
+    component_statuses = {
+        "embedding_model_loaded": em_ready,
+        "vector_store_provider": vs_provider,
+        "vector_store_healthy": vs_ready,
+        "llm_client_initialized": llm_cli_ready,
+        "ollama_service_accessible": ollama_service_healthy,
+        "redis_cache_connected": redis_ready
+    }
+    if not all(component_statuses.values()): # Simplified check, some components might be optional based on config
+         if not em_ready : logger.warning("Health Check: Embedding model not ready.")
+         if not vs_ready : logger.warning(f"Health Check: Vector store '{vs_provider}' not ready.")
+         if not llm_cli_ready : logger.warning("Health Check: LLM Client not initialized (Ollama).")
+         if not ollama_service_healthy : logger.warning("Health Check: Ollama service not accessible.")
+         # Redis not being ready might be acceptable if caching is optional.
+         overall_status = "degraded"
+
+
+    return {"status": overall_status, "components": component_statuses}
 
 if __name__ == "__main__":
     # ... (uvicorn startup as before) ...

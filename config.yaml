@@ -32,30 +32,9 @@ vector_store:
     dimension: 768 # Usually fixed per model
   milvus:
     host: "localhost" # ENV_VAR: MILVUS_HOST
-    port: "19530" # ENV_VAR: MILVUS_PORT (pymilvus client expects string)
+    port: 19530 # ENV_VAR: MILVUS_PORT
     collection_name: "documents" # ENV_VAR: MILVUS_COLLECTION_NAME
-    # vector_dim is determined by embedding model; distance_metric by initialize()
-    # user: "" # Optional: ENV_VAR: MILVUS_USER
-    # password: "" # Optional: ENV_VAR: MILVUS_PASSWORD
-  chroma:
-    # For HTTP client:
-    host: "localhost" # Optional: ENV_VAR: CHROMA_HOST
-    port: 8000 # Optional: ENV_VAR: CHROMA_PORT
-    # use_ssl: false # Optional: ENV_VAR: CHROMA_USE_SSL
-    # headers: {} # Optional: e.g. {"Authorization": "Bearer <token>"}
-    # For Persistent client (local disk):
-    path: "data/chroma_db" # Optional: ENV_VAR: CHROMA_PATH. If host/port and path are empty, uses EphemeralClient (in-memory)
-    collection_name: "documents" # ENV_VAR: CHROMA_COLLECTION_NAME
-    # distance_metric: "cosine" # Or "l2", "ip". Passed to initialize()
-  faiss:
-    index_file_path: "data/faiss_index.bin" # ENV_VAR: FAISS_INDEX_PATH
-    metadata_file_path: "data/faiss_metadata.pkl" # ENV_VAR: FAISS_METADATA_PATH
-    collection_name: "documents" # Conceptual name, mainly for consistency
-    # distance_metric: "L2" # Or "IP". Passed to initialize()
-    # faiss_index_type: "IndexFlatL2" # Passed to initialize() e.g. "IndexFlatIP", "IndexHNSWFlat"
-  # Common settings (can be overridden per provider if needed, or used as defaults by services)
-  default_collection_name: "documents"
-  default_distance_metric: "Cosine" # Generic, will be mapped by each provider
+    vector_dim: 768
 
 # LLM service configuration with multiple providers
 llm:

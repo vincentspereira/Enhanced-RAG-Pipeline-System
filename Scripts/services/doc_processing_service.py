@@ -4,15 +4,10 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, Union
 
-# Vector Store and Embedding Model Imports
+# Qdrant and SentenceTransformer imports
+from qdrant_client import QdrantClient, models as qdrant_models
 from sentence_transformers import SentenceTransformer
 import torch # For device selection
-from Scripts.storage.vector_store_base import VectorStoreBase, DocumentChunk # Assuming DocumentChunk is defined here or imported by stores
-from Scripts.storage.qdrant_vector_store import QdrantVectorStore
-from Scripts.storage.weaviate_vector_store import WeaviateVectorStore
-from Scripts.storage.milvus_vector_store import MilvusVectorStore
-from Scripts.storage.chroma_vector_store import ChromaVectorStore
-from Scripts.storage.faiss_vector_store import FaissVectorStore
 import uuid # For generating document IDs
 import fitz # PyMuPDF
 from docx import Document as DocxDocument # For reading .docx files
@@ -31,23 +26,15 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 # Import config loader
 try:
     from Scripts.utils.config_loader import get_config_value
-    from Scripts.utils.rabbitmq_producer import RabbitMQProducer # Import RabbitMQProducer
 except ImportError:
     import sys
     sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     try:
         from utils.config_loader import get_config_value
-        from utils.rabbitmq_producer import RabbitMQProducer # Import RabbitMQProducer
     except ImportError as e:
-        logger.error(f"Critical: Failed to import get_config_value or RabbitMQProducer for Document Processing Service. Error: {e}")
+        logger.error(f"Critical: Failed to import get_config_value for Document Processing Service. Error: {e}")
         def get_config_value(env_var_name, yaml_path=None, default=None): # Basic fallback
             return os.getenv(env_var_name, default)
-        # Dummy RabbitMQProducer if import fails
-        class RabbitMQProducer:
-            def __init__(self, *args, **kwargs): logger.error("Dummy RabbitMQProducer initialized.")
-            def publish_message(self, *args, **kwargs): logger.warning("Dummy RabbitMQProducer: publish_message called.")
-            def close(self): logger.info("Dummy RabbitMQProducer: close called.")
-
 
 # --- Configuration ---
 QDRANT_HOST = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
@@ -65,9 +52,8 @@ CHUNK_OVERLAP = int(get_config_value("CHUNK_OVERLAP", yaml_path="document_proces
 
 # --- Global Variables ---
 app = FastAPI(title="Document Processing Service")
-vector_store: Optional[VectorStoreBase] = None # Unified vector store instance
+qdrant_client: Optional[QdrantClient] = None
 embedding_model: Optional[SentenceTransformer] = None
-rabbitmq_producer: Optional[RabbitMQProducer] = None
 
 
 # --- Pydantic Models ---
@@ -83,10 +69,44 @@ class ProcessingResponse(BaseModel):
 # --- Service Initialization and Shutdown ---
 @app.on_event("startup")
 async def startup_event():
-    global vector_store, embedding_model, rabbitmq_producer
+    global qdrant_client, embedding_model
     logger.info("Document Processing Service starting up...")
 
-    # Initialize Embedding Model First (to get vector_size if needed by some stores)
+    # Initialize Qdrant Client
+    try:
+        logger.info(f"Connecting to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}...")
+        qdrant_client = QdrantClient(
+            host=QDRANT_HOST,
+            port=QDRANT_PORT,
+            api_key=QDRANT_API_KEY if QDRANT_API_KEY else None
+        )
+        # Check if collection exists, optionally create it.
+        # For this service, we assume the collection might need to be created if it doesn't exist,
+        # or at least log a clear warning.
+        try:
+            qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+            logger.info(f"Successfully connected to Qdrant. Collection '{QDRANT_COLLECTION_NAME}' exists.")
+        except Exception as e: # Broad exception as Qdrant client might raise different errors for non-existent collection
+            logger.warning(f"Qdrant collection '{QDRANT_COLLECTION_NAME}' not found or connection error: {e}. Attempting to create it.")
+            try:
+                # Determine vector size from the embedding model
+                temp_model_for_size = SentenceTransformer(EMBEDDING_MODEL_NAME)
+                vector_size = temp_model_for_size.get_sentence_embedding_dimension()
+                del temp_model_for_size # free memory
+
+                qdrant_client.recreate_collection( # Use recreate_collection for idempotency
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    vectors_config=qdrant_models.VectorParams(size=vector_size, distance=qdrant_models.Distance.COSINE)
+                )
+                logger.info(f"Successfully created Qdrant collection '{QDRANT_COLLECTION_NAME}' with vector size {vector_size}.")
+            except Exception as creation_e:
+                logger.error(f"Failed to create Qdrant collection '{QDRANT_COLLECTION_NAME}': {creation_e}")
+                qdrant_client = None # Mark as not initialized if collection handling fails
+    except Exception as e:
+        logger.error(f"Failed to initialize Qdrant client: {e}")
+        qdrant_client = None
+
+    # Initialize Embedding Model
     try:
         logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME} on device: {MODEL_DEVICE}")
         device_to_use = MODEL_DEVICE
@@ -97,113 +117,25 @@ async def startup_event():
         embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME, device=device_to_use)
         logger.info(f"Embedding model loaded successfully. Vector size: {embedding_model.get_sentence_embedding_dimension()}")
     except Exception as e:
-        logger.error(f"Failed to load embedding model '{EMBEDDING_MODEL_NAME}': {e}", exc_info=True)
-        embedding_model = None # Crucial for health checks and subsequent ops
-        # Depending on policy, might want to raise HTTPException or exit if embedding model is critical
+        logger.error(f"Failed to load embedding model '{EMBEDDING_MODEL_NAME}': {e}")
+        embedding_model = None
 
-    # Initialize Vector Store
-    if embedding_model: # Only proceed if embedding model loaded, as we need vector_size
-        provider = get_config_value("VECTOR_STORE_PROVIDER", yaml_path="vector_store.provider", default="qdrant")
-        collection_name = get_config_value(f"VECTOR_STORE_{provider.upper()}_COLLECTION_NAME",
-                                           yaml_path=f"vector_store.{provider}.collection_name",
-                                           default="documents")
-        vector_size = embedding_model.get_sentence_embedding_dimension()
-        distance_metric = get_config_value(f"VECTOR_STORE_{provider.upper()}_DISTANCE",
-                                           yaml_path=f"vector_store.{provider}.distance_metric",
-                                           default="Cosine") # Default, specific stores might override
-
-        logger.info(f"Initializing vector store provider: {provider}")
-        global vector_store
-        try:
-            if provider == "qdrant":
-                host = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
-                port = int(get_config_value("QDRANT_PORT", yaml_path="vector_store.qdrant.port", default=6333))
-                api_key = get_config_value("QDRANT_API_KEY", yaml_path="vector_store.qdrant.api_key")
-                vector_store = QdrantVectorStore(host=host, port=port, api_key=api_key)
-            elif provider == "weaviate":
-                url = get_config_value("WEAVIATE_URL", yaml_path="vector_store.weaviate.url", default="http://localhost:8080")
-                api_key = get_config_value("WEAVIATE_API_KEY", yaml_path="vector_store.weaviate.api_key")
-                vector_store = WeaviateVectorStore(url=url, api_key=api_key)
-                collection_name = get_config_value(f"WEAVIATE_CLASS_NAME", yaml_path=f"vector_store.weaviate.class_name", default="Document") # Weaviate uses Class names
-            elif provider == "milvus":
-                host = get_config_value("MILVUS_HOST", yaml_path="vector_store.milvus.host", default="localhost")
-                port = get_config_value("MILVUS_PORT", yaml_path="vector_store.milvus.port", default="19530")
-                # Add user/password/alias if needed for Milvus from config
-                vector_store = MilvusVectorStore(host=host, port=port)
-            elif provider == "chroma":
-                chroma_path = get_config_value("CHROMA_PATH", yaml_path="vector_store.chroma.path")
-                chroma_host = get_config_value("CHROMA_HOST", yaml_path="vector_store.chroma.host")
-                chroma_port = get_config_value("CHROMA_PORT", yaml_path="vector_store.chroma.port")
-                if chroma_host and chroma_port: # HTTP client mode
-                    vector_store = ChromaVectorStore(host=chroma_host, port=int(chroma_port))
-                elif chroma_path: # Persistent client mode
-                    vector_store = ChromaVectorStore(path=chroma_path)
-                else: # Ephemeral (in-memory)
-                    vector_store = ChromaVectorStore()
-            elif provider == "faiss":
-                index_path = get_config_value("FAISS_INDEX_PATH", yaml_path="vector_store.faiss.index_file_path", default="data/faiss_index.bin")
-                metadata_path = get_config_value("FAISS_METADATA_PATH", yaml_path="vector_store.faiss.metadata_file_path", default="data/faiss_metadata.pkl")
-                vector_store = FaissVectorStore(index_file_path=index_path, metadata_file_path=metadata_path)
-            else:
-                logger.error(f"Unsupported vector store provider: {provider}")
-                raise ValueError(f"Unsupported vector store provider: {provider}")
-
-            if vector_store:
-                await vector_store.initialize(collection_name, vector_size, distance_metric)
-                logger.info(f"Vector store '{provider}' initialized successfully for collection '{collection_name}'.")
-            else: # Should have been caught by ValueError above
-                 logger.error(f"Vector store provider '{provider}' could not be instantiated.")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize vector store provider '{provider}': {e}", exc_info=True)
-            vector_store = None # Ensure it's None if init fails
+    if not qdrant_client or not embedding_model:
+        logger.error("Document Processing Service startup has issues: one or more critical components failed to initialize.")
     else:
-        logger.error("Embedding model failed to load. Vector store initialization skipped.")
-        vector_store = None
-
-
-    if not vector_store or not embedding_model: # Check unified vector_store now
-        logger.error("Document Processing Service startup has issues: Vector Store or Embedding Model failed to initialize.")
-    else:
-        logger.info("Document Processing Service core components (Vector Store, Embedding Model) initialized.")
-
-    # Initialize RabbitMQ Producer
-    # global rabbitmq_producer # Already global
-    try:
-        # Configuration for RabbitMQ should ideally come from config_loader or env vars
-        # Example: RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_USER, RABBITMQ_PASSWORD, RABBITMQ_VHOST
-        # For simplicity, using defaults or expecting environment setup if RabbitMQProducer handles it.
-        rabbitmq_host = get_config_value("RABBITMQ_HOST", default="localhost")
-        # rabbitmq_port = int(get_config_value("RABBITMQ_PORT", default=5672)) # pika default
-        # rabbitmq_user = get_config_value("RABBITMQ_USER")
-        # rabbitmq_password = get_config_value("RABBITMQ_PASSWORD")
-
-        # Assuming RabbitMQProducer can be initialized with just the host or picks up from env
-        rabbitmq_producer = RabbitMQProducer(host=rabbitmq_host) # Adjust constructor as needed
-        logger.info("RabbitMQ Producer initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize RabbitMQ Producer: {e}", exc_info=True)
-        rabbitmq_producer = None
+        logger.info("Document Processing Service startup complete.")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global vector_store, rabbitmq_producer # Updated from qdrant_client
+    global qdrant_client
     logger.info("Document Processing Service shutting down...")
-    if vector_store:
+    if qdrant_client:
         try:
-            await vector_store.close() # Use the new abstract close method
-            logger.info("Vector store connection closed.")
+            # Qdrant client typically doesn't require explicit close for HTTP.
+            pass
         except Exception as e:
-            logger.error(f"Error closing vector store: {e}", exc_info=True)
-
-    if rabbitmq_producer:
-        try:
-            rabbitmq_producer.close()
-            logger.info("RabbitMQ Producer connection closed.")
-        except Exception as e:
-            logger.error(f"Error closing RabbitMQ Producer connection: {e}", exc_info=True)
-
+            logger.error(f"Error during Qdrant client cleanup (if any): {e}")
     logger.info("Document Processing Service shutdown complete.")
 
 
@@ -324,10 +256,10 @@ async def process_document_endpoint(
         logger.error(f"Failed to parse metadata_json: {metadata_json}")
         raise HTTPException(status_code=400, detail="Invalid JSON format for metadata.")
 
-    # --- Actual processing and Vector Store indexing ---
+    # --- Actual processing and Qdrant indexing ---
     if text_to_embed and text_to_embed.strip(): # Only proceed if we have non-empty text content
-        if not vector_store or not embedding_model: # Check unified vector_store
-            logger.error("Cannot process document: Vector Store or Embedding Model not initialized.")
+        if not qdrant_client or not embedding_model:
+            logger.error("Cannot process document: Qdrant client or embedding model not initialized.")
             raise HTTPException(status_code=503, detail="Service not ready to process and index documents.")
         try:
             # 1. Generate parent document ID and basic keywords/TFs from full text
@@ -395,65 +327,49 @@ async def process_document_endpoint(
                     "chunk_sequence_number": i,
                     "metadata": parent_metadata # Parent's full metadata including keywords, TFs, source etc.
                 }
-                # Using DocumentChunk from vector_store_base
-                document_chunks_to_add.append(DocumentChunk(
-                    id=chunk_id, # Ensure this ID is unique and suitable for the chosen DB
-                    text=chunk_text,
+
+                points_to_upsert.append(qdrant_models.PointStruct(
+                    id=chunk_id,
                     vector=embedding,
-                    metadata=chunk_metadata
+                    payload=chunk_payload
                 ))
 
-            logger.info(f"Prepared {len(document_chunks_to_add)} document chunks for upsertion for parent document {parent_doc_id}.")
+            logger.info(f"Generated {len(points_to_upsert)} points for upsertion for parent document {parent_doc_id}.")
 
-            # Upsert all document chunks to the configured vector store
-            if document_chunks_to_add:
-                # Determine collection name from config, as it might vary per provider
-                provider = get_config_value("VECTOR_STORE_PROVIDER", yaml_path="vector_store.provider", default="qdrant")
-                collection_name_cfg_key = f"vector_store.{provider}.collection_name"
-                # For Weaviate, it's class_name
-                if provider == "weaviate":
-                    collection_name_cfg_key = f"vector_store.weaviate.class_name"
+            # Generate basic keywords
+            try:
+                import re
+                words = re.findall(r'\b\w+\b', text_to_embed.lower())
+                # Simple stop word list, can be expanded or use a library like NLTK/spaCy
+                stop_words = set([
+                    "the", "a", "is", "in", "it", "to", "of", "and", "for", "on", "with", "this", "that",
+                    "an", "by", "as", "at", "or", "if", "not", "be", "was", "were", "am", "are", "has",
+                    "had", "do", "does", "did", "will", "would", "should", "can", "could", "may", "might",
+                    "i", "you", "he", "she", "we", "they", "me", "him", "her", "us", "them", "my", "your",
+                    "his", "its", "our", "their", "mine", "yours", "hers", "ours", "theirs", "from"
+                ])
+                keywords = list(set(word for word in words if word not in stop_words and len(word) > 2 and not word.isdigit()))
+                payload_for_qdrant["metadata"]["keywords"] = keywords[:150] # Store up to 150 keywords
+                logger.info(f"Generated {len(keywords)} unique basic keywords for document {doc_id_for_qdrant}.")
 
-                target_collection_name = get_config_value(f"VECTOR_STORE_{provider.upper()}_COLLECTION_NAME", # Env var
-                                           yaml_path=collection_name_cfg_key,
-                                           default="documents")
+                # Calculate Term Frequencies for these keywords
+                term_frequencies = {kw: words.count(kw) for kw in keywords}
+                payload_for_qdrant["metadata"]["term_frequencies"] = term_frequencies
+                logger.info(f"Calculated term frequencies for document {doc_id_for_qdrant}.")
 
-                added_ids = await vector_store.add_documents(
-                    collection_name=target_collection_name,
-                    documents=document_chunks_to_add
-                    # Add other provider-specific args from **kwargs if needed by specific implementations
+            except Exception as kw_e:
+                logger.warning(f"Could not generate keywords or term frequencies for document {doc_id_for_qdrant}: {kw_e}")
+                payload_for_qdrant["metadata"]["keywords"] = []
+                payload_for_qdrant["metadata"]["term_frequencies"] = {}
+
+            # Upsert all chunk points to Qdrant in batches if necessary (though Qdrant client handles batching)
+            if points_to_upsert:
+                qdrant_client.upsert(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    points=points_to_upsert,
+                    wait=True
                 )
-                logger.info(f"{len(added_ids)} chunks for document '{parent_doc_id}' successfully processed by vector store '{provider}'.")
-            else:
-                logger.info(f"No chunks to add for document {parent_doc_id}.")
-
-
-            # Publish event to RabbitMQ
-            if rabbitmq_producer:
-                event_message = {
-                    "event_type": "document_processed",
-                    "parent_document_id": str(parent_doc_id),
-                    "filename": filename,
-                    "chunks_indexed": len(chunks),
-                    "status": "indexed_chunked",
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-                # Define your exchange and routing key based on your RabbitMQ setup
-                # For this example, using a direct exchange (default) and routing key 'doc_events'
-                # Queue 'document_processing_events' should be bound to this routing key on an exchange.
-                # This assumes RabbitMQProducer's publish_message handles exchange/routing_key declaration or uses defaults.
-                try:
-                    rabbitmq_producer.publish_message(
-                        exchange_name='', # Default exchange
-                        routing_key='document_processing_events', # Queue name
-                        message_body=json.dumps(event_message)
-                    )
-                    logger.info(f"Published 'document_processed' event for {parent_doc_id} to RabbitMQ.")
-                except Exception as mq_e:
-                    logger.error(f"Failed to publish document_processed event to RabbitMQ for {parent_doc_id}: {mq_e}", exc_info=True)
-            else:
-                logger.warning("RabbitMQ producer not available. Skipping event publishing.")
-
+                logger.info(f"{len(points_to_upsert)} chunks for document '{parent_doc_id}' successfully indexed into Qdrant.")
 
             return ProcessingResponse(
                 message=f"Document processed. {len(chunks)} chunks indexed.",
@@ -504,29 +420,26 @@ async def process_document_endpoint(
 
 @app.get("/health", tags=["Health"])
 async def health_check():
+    q_ready = bool(qdrant_client)
     em_ready = bool(embedding_model)
-    vs_ready = False
-    vs_provider = "N/A"
 
-    if vector_store:
-        vs_ready = await vector_store.health_check()
-        vs_provider = get_config_value("VECTOR_STORE_PROVIDER", yaml_path="vector_store.provider", default="unknown")
-
-    overall_status = "healthy"
-    if not em_ready or not vs_ready:
-        overall_status = "degraded"
-        if not em_ready: logger.warning("Health Check: Embedding model not ready.")
-        if not vs_ready: logger.warning(f"Health Check: Vector store '{vs_provider}' not ready.")
-
+    # Basic health check, can be expanded to check Qdrant/model actual responsiveness
+    if q_ready and em_ready:
+        status = "healthy"
+        # Optionally, try a lightweight Qdrant operation if concerned about staleness
+        # try:
+        #     qdrant_client.get_collection(collection_name=QDRANT_COLLECTION_NAME)
+        # except Exception:
+        #     status = "degraded" # Qdrant might be down
+    else:
+        status = "degraded"
 
     return {
-        "status": overall_status,
+        "status": status,
         "service_type": "document_processor",
         "components": {
-            "embedding_model_initialized": em_ready,
-            "vector_store_provider": vs_provider,
-            "vector_store_healthy": vs_ready,
-            "rabbitmq_producer_connected": rabbitmq_producer is not None and rabbitmq_producer.channel is not None and rabbitmq_producer.channel.is_open
+            "qdrant_initialized": q_ready,
+            "embedding_model_initialized": em_ready
         }
     }
 

@@ -152,11 +152,6 @@ class BackupManager:
             bucket = self.config['s3_bucket']
             key = f"backups/{os.path.basename(file_path)}"
             
-            # Placeholder: Encrypt file_path before upload if encryption_key is provided in config
-            # e.g., encrypted_file_path = self.encrypt_file(file_path, self.config.get("backup_encryption_key"))
-            # self.s3_client.upload_file(encrypted_file_path, bucket, key)
-            # os.remove(encrypted_file_path) # Clean up local encrypted file
-            # For now, directly uploading original file
             self.s3_client.upload_file(file_path, bucket, key)
             self.logger.info(f"Backup uploaded to S3: {key}")
             return True

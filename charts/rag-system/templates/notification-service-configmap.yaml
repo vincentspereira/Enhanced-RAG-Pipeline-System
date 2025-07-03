@@ -1,0 +1,18 @@
+{{- if .Values.notificationService.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.notificationService "context" .) }}-config
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.notificationService.name }}
+data:
+  NOTIFICATION_SERVICE_PORT: {{ .Values.notificationService.containerPort | quote }}
+  LOGGING_LEVEL: {{ .Values.notificationService.config.LOGGING_LEVEL | default "INFO" | quote }}
+  # SMTP settings are expected to be mounted from a secret.
+  # The following are placeholders if you were to set them directly in ConfigMap (not recommended for sensitive data)
+  # SMTP_SERVER: {{ .Values.notificationService.config.SMTP_SERVER | default "" | quote }}
+  # SMTP_PORT: {{ .Values.notificationService.config.SMTP_PORT | default "587" | quote }}
+  # SMTP_USERNAME: {{ .Values.notificationService.config.SMTP_USERNAME | default "" | quote }}
+  # SENDER_EMAIL: {{ .Values.notificationService.config.SENDER_EMAIL | default "" | quote }}
+{{- end }}

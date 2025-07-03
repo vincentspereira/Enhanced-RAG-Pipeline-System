@@ -11,14 +11,19 @@ ENV PYTHONIOENCODING=UTF-8
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
-# Install system dependencies including Python 3.11
+# Install system dependencies including Python 3.13
 # Add git for potential VCS operations by tools, curl for downloads
 # tesseract-ocr and poppler-utils are from original Dockerfile, kept for now.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    python3.11 \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa -y \
+    && apt-get update && \
+    apt-get install -y --no-install-recommends \
+    python3.13 \
     python3-pip \
-    python3.11-venv \
+    python3.13-venv \
+    python3.13-dev \
     git \
     curl \
     tesseract-ocr \
@@ -26,8 +31,9 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Make python3.11 the default python3
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+# Make python3.13 the default python3
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.13 1 && \
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1
 
 # Set working directory
 WORKDIR /app

@@ -19,6 +19,9 @@ elif [ "$SERVICE_TO_RUN" = "rag_query_service" ]; then
 elif [ "$SERVICE_TO_RUN" = "doc_processing_service" ]; then
     echo "Starting Document Processing Service..."
     exec python3 -u /app/Scripts/services/doc_processing_service.py
+elif [ "$SERVICE_TO_RUN" = "notification_service" ]; then
+    echo "Starting Notification Service..."
+    exec python3 -u /app/Scripts/services/notification_service.py
 elif [ "$SERVICE_TO_RUN" = "main_script" ]; then # Option to run the original main script
     echo "Starting main script (Scripts.main)..."
     exec python3 -u -m Scripts.main
@@ -29,6 +32,6 @@ elif [ "$SERVICE_TO_RUN" = "ollama_serve" ]; then # Option to just run ollama se
     exec ollama serve
 else
     echo "Error: Unknown service '$SERVICE_TO_RUN'"
-    echo "Available services: internal_api_gateway, rag_query_service, doc_processing_service, main_script, ollama_serve"
+    echo "Available services: internal_api_gateway, rag_query_service, doc_processing_service, notification_service, main_script, ollama_serve"
     exit 1
 fi

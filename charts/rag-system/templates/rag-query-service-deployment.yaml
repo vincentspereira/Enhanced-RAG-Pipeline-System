@@ -58,6 +58,16 @@ spec:
             timeoutSeconds: 10
           resources:
             {{- toYaml .Values.ragQueryService.resources | nindent 12 }}
+            {{- if .Values.ragQueryService.gpus }}
+            {{- with .Values.ragQueryService.gpus.limits }}
+            limits:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- with .Values.ragQueryService.gpus.requests }}
+            requests:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

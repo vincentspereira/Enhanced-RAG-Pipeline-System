@@ -244,6 +244,7 @@ These examples need to be adapted based on actual deployed metric names, labels,
     *   **Definition**: Derived from an SLO, the error budget is the acceptable level of unreliability. For example, an SLO of 99.9% availability means a 0.1% error budget over the compliance period.
     *   **Usage**: Error budgets provide a data-driven way to balance reliability work with feature development. If the error budget is being consumed too quickly, focus shifts to reliability. If there's ample budget, more risk can be taken with new releases.
     *   **Current Status**: Error budgets will be calculated once specific SLOs are defined and agreed upon.
+    *   **Action Required**: Please define specific target values (percentages, milliseconds) for the example SLOs provided above, or define new SLOs critical to your business needs. This will allow for accurate error budget calculation and focused reliability efforts.
 
 ## 7. Distributed Tracing (Future Phase)
 

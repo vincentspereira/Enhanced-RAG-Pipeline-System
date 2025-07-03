@@ -45,3 +45,14 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  n8n:
+    image: n8nio/n8n
+    ports:
+      - "5678:5678"
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+    environment:
+      - GENERIC_TIMEZONE=${TZ:-Europe/Berlin} # Set your timezone
+      # - WEBHOOK_URL=https://your-domain.com/ # If you have a domain for n8n webhooks
+    restart: unless-stopped

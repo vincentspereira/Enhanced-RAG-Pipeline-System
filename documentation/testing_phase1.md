@@ -8,8 +8,16 @@ This document outlines the testing strategies for various aspects of the system 
 
 *   **Objective:** Verify the system's ability to scale out horizontally by adding more instances/nodes to handle increased load.
 *   **Methodology:**
-    *   Define load profiles (e.g., concurrent users, requests per second).
-    *   Use load generation tools (e.g., JMeter, k6, Locust).
+    *   Define load profiles (e.g., concurrent users, requests per second for API Gateway, queries per second for RAG service).
+    *   **Tools:**
+        *   **k6 (recommended):** Modern load testing tool, scriptable in JavaScript. Good for API load testing. (https://k6.io/)
+        *   **Locust:** Python-based, good for testing systems with complex user behavior. (https://locust.io/)
+        *   **JMeter:** Java-based, feature-rich, but can be more complex to set up.
+    *   **Methodology Details:**
+        *   Start with a baseline number of pods/instances.
+        *   Gradually increase the load using the chosen tool.
+        *   Observe HPA triggers (if in Kubernetes) or manually scale out instances.
+        *   Monitor KPIs: response time (average, P95, P99), error rate, throughput (RPS), and resource utilization (CPU, memory) on nodes and pods via Prometheus/Grafana.
     *   Monitor key performance indicators (KPIs) like response time, error rate, and resource utilization (CPU, memory) on existing nodes.
     *   Trigger auto-scaling (if configured) or manually add nodes.
     *   Observe how the load is distributed and if KPIs remain within acceptable thresholds.
@@ -32,6 +40,12 @@ This document outlines the testing strategies for various aspects of the system 
     *   Database maintains acceptable query latency under X load.
     *   Replication lag for read replicas stays within Y seconds.
     *   No deadlocks or significant contention issues.
+    *   **Tools for DB Load:**
+        *   PostgreSQL: `pgbench`
+        *   MySQL: `sysbench`
+        *   MongoDB: `perfmongo` (or custom scripts using drivers)
+        *   Qdrant: Custom scripts using the Qdrant client to simulate concurrent search/write operations.
+    *   **Strategy:** Test specific scenarios like high read throughput, high write throughput, mixed workloads, and large dataset queries.
 
 ## 3. GPU/CPU Utilization Testing
 
@@ -105,11 +119,20 @@ This document outlines the testing strategies for various aspects of the system 
         *   Periodically restore data from backups to a separate environment.
         *   Verify data integrity and completeness.
     *   **Failover Drills:**
-        *   Simulate failures of primary components (e.g., database server, application instance, entire region/zone).
-        *   Execute failover procedures (manual or automated).
+        *   Simulate failures of primary components (e.g., database server, application instance, Kubernetes node, entire zone/region if applicable).
+        *   **Tools/Techniques for Simulation:**
+            *   Kubernetes: Delete pods, scale deployments to zero, cordon/drain nodes.
+            *   Network: Use network policies or firewall rules to simulate connectivity loss.
+            *   Cloud Provider: Use fault injection services if available (e.g., AWS Fault Injection Simulator).
+        *   Execute failover procedures outlined in `documentation/disaster_recovery.md` (manual or automated).
         *   Measure the time taken for failover (RTO).
-        *   Verify that services are operational in the failover environment.
-        *   Assess data loss, if any (RPO).
+        *   Verify that services are operational in the failover environment (e.g., using automated health checks or E2E tests).
+        *   Assess data loss, if any, against RPO by checking data consistency post-recovery.
+    *   **Strategy:**
+        *   Start with component-level failover tests (e.g., single pod, database instance).
+        *   Progress to service-level and eventually cluster/region-level failover drills (if applicable).
+        *   Automate parts of the verification process using health check scripts or a subset of E2E tests.
+        *   Document results of each drill and update DR plans accordingly.
 *   **Success Criteria:**
     *   Data can be successfully restored from backups within the defined RPO.
     *   Systems can be failed over to a secondary environment within the defined RTO.

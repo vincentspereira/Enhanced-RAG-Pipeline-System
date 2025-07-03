@@ -35,18 +35,6 @@ spec:
             - name: http
               containerPort: {{ .Values.internalApiGateway.containerPort }}
               protocol: TCP
-          livenessProbe:
-            httpGet:
-              path: /gateway_health
-              port: http
-            initialDelaySeconds: 15
-            periodSeconds: 20
-          readinessProbe:
-            httpGet:
-              path: /gateway_health
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 10
           env:
             - name: RAG_QUERY_SERVICE_URL
               valueFrom:

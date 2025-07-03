@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, List, Union, Callable, Awaitable
+from typing import Any, Dict, Optional, List, Union
 import json
 import hashlib
 from datetime import datetime, timedelta
@@ -310,54 +310,3 @@ class QueryCache:
     def stats(self) -> CacheStats:
         """Get cache statistics"""
         return self.cache.stats
-
-    async def warm_cache(self, items_to_warm: List[Dict[str, Any]], default_ttl: Optional[int] = None):
-        """
-        Warms the cache with a list of predefined items.
-        Each item in items_to_warm should be a dict with "query", "params", and "result".
-        Optional "ttl" per item, otherwise default_ttl or self.config.default_ttl is used.
-        """
-        if not items_to_warm:
-            return
-
-        logger.info(f"Starting cache warming process for {len(items_to_warm)} items.")
-        warmed_count = 0
-        for item in items_to_warm:
-            query = item.get("query")
-            params = item.get("params")
-            result = item.get("result")
-            ttl = item.get("ttl", default_ttl) # Item-specific TTL takes precedence
-
-            if query is None or result is None:
-                logger.warning(f"Skipping cache warming for item due to missing 'query' or 'result': {item}")
-                continue
-
-            # Check if already cached to avoid unnecessary writes, unless force_overwrite is a feature
-            # current_cached = await self.get_cached_result(query, params)
-            # if current_cached is not None:
-            #     logger.debug(f"Item for query '{query}' already in cache. Skipping warm-up for this item.")
-            #     continue
-
-            success = await self.cache_result(query=query, result=result, params=params, ttl=ttl)
-            if success:
-                warmed_count += 1
-                logger.debug(f"Warmed cache for query: {query}, params: {params}")
-            else:
-                logger.warning(f"Failed to warm cache for query: {query}, params: {params}")
-
-        logger.info(f"Cache warming process completed. Warmed {warmed_count}/{len(items_to_warm)} items.")
-
-    async def schedule_cache_warming(self, warming_function: Callable[[], Awaitable[List[Dict[str, Any]]]], interval_seconds: int):
-        """
-        Schedules a function to provide items for cache warming at regular intervals.
-        warming_function should be an async function that returns a list of items_to_warm.
-        """
-        logger.info(f"Cache warming scheduled to run every {interval_seconds} seconds.")
-        while True:
-            await asyncio.sleep(interval_seconds)
-            logger.info("Executing scheduled cache warming...")
-            try:
-                items = await warming_function()
-                await self.warm_cache(items)
-            except Exception as e:
-                logger.error(f"Error during scheduled cache warming: {e}", exc_info=True)

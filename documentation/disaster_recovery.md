@@ -30,7 +30,22 @@ This document outlines the disaster recovery (DR) procedures and strategies for 
     *   **Application Data:**
         *   [Backup procedures for persistent application data]
     *   **Configuration Data:**
-        *   [How infrastructure and application configurations are backed up (e.g., Git, S3)]
+        *   Infrastructure configurations (Kubernetes manifests, Helm charts, Dockerfiles) are version-controlled in Git.
+        *   Application configurations (`config.yaml`, environment variables) should be managed securely, potentially using Kubernetes ConfigMaps/Secrets, which are also version-controlled or backed up as part of cluster state.
+
+    *   **Relational Databases (e.g., PostgreSQL - if used and managed by `BackupManager`):**
+        *   **Backup Method**: Utilizes `pg_dump` for logical backups, executed by `Scripts/monitoring/backup_manager.py`.
+        *   **Frequency**: Configurable (e.g., daily). See `BackupManager` scheduling.
+        *   **Storage**: Local backup files (`.sql`) are created in the `backup_manager`'s configured directory. These can be automatically uploaded to S3 (or other cloud storage) if `BackupManager` is configured for it.
+        *   **Encryption**: Placeholder for encryption exists in `BackupManager` before cloud upload. Key management for encryption is crucial.
+        *   **Retention**: Managed by `BackupManager`'s cleanup logic (local) and S3 lifecycle policies (cloud).
+        *   **Restoration**:
+            1.  Download the required `.sql` backup file from S3 or local backup storage.
+            2.  If encrypted, decrypt the file.
+            3.  Provision a new PostgreSQL instance.
+            4.  Restore using `psql -U <user> -d <database> -f <backup_file.sql>`.
+            5.  Verify data integrity.
+        *   **Point-in-Time Recovery (PITR)**: `pg_dump` provides a point-in-time snapshot. True PITR for PostgreSQL requires continuous WAL archiving, which is an advanced DB administration setup beyond the current `BackupManager`'s direct scope but can complement these backups.
 
     *   **Vector Database (Qdrant)**:
         *   **Context**: Qdrant stores document embeddings and metadata, critical for the RAG functionality.
@@ -65,8 +80,10 @@ This document outlines the disaster recovery (DR) procedures and strategies for 
             1.  **Provision New Qdrant Instance**: If the primary instance is lost.
             2.  **Retrieve Snapshot**: Download the required snapshot from external backup storage.
             3.  **Place Snapshot**: Make the snapshot file(s) accessible to the new Qdrant instance (e.g., by copying onto its PV).
-            4.  **Restore via API**: Use Qdrant's API to restore the collection from the snapshot file(s). (Refer to specific Qdrant version documentation for exact API endpoints and procedures, as this might involve uploading the snapshot through an API or placing it in a predefined recovery directory).
-            5.  **Verify**: Check data integrity and search functionality.
+            4.  **Restore via API**:
+                *   The exact Qdrant API endpoint to restore a snapshot might depend on the version and how snapshots are managed (e.g., `POST /collections/{collection_name}/snapshots/upload` or by placing snapshot in a recovery directory and using a recovery mode).
+                *   Consult the official Qdrant documentation for the specific API call to recover a collection from a snapshot file. The `BackupManager` currently backs up snapshot files; restoration is a manual Qdrant admin task using these files.
+            5.  **Verify**: Check collection existence, point counts, and perform sample search queries.
 
     *   **AI Models (Ollama)**:
         *   **Context**: Ollama downloads and stores large language models locally, typically within its container's filesystem (e.g., `/root/.ollama` by default), which should be mapped to a PersistentVolume (PV) when deployed in Kubernetes (as done in `ollama-statefulset.yaml`).
@@ -149,11 +166,41 @@ This document outlines the disaster recovery (DR) procedures and strategies for 
 ## 5. Incident Response Playbooks
 
 *   **Playbook 1: Data Center Outage**
-    *   [Specific steps to take]
-*   **Playbook 2: Major Data Corruption**
-    *   [Specific steps to take]
-*   **Playbook 3: Ransomware Attack**
-    *   [Specific steps to take]
+    *   **Detection:** Monitoring alerts indicate loss of connectivity to the primary data center/region.
+    *   **Initial Assessment:** DR Team Lead verifies the outage scope and impact. Estimate time to recovery of primary site.
+    *   **Decision:** If RTO for primary site recovery is exceeded, DR Team Lead declares a disaster and initiates failover.
+    *   **Execution:**
+        1.  Execute infrastructure failover scripts/procedures (e.g., promote DR Kubernetes cluster, update DNS to DR IP addresses).
+        2.  Restore critical databases (PostgreSQL, Qdrant) from the latest available backups in the DR region (see data restoration procedures above).
+        3.  Deploy/scale up application services in the DR Kubernetes cluster using Helm charts, pointing to restored data sources.
+        4.  Restore application data from backups if necessary.
+        5.  Perform system health checks and functional testing in the DR environment.
+        6.  Communicate status to stakeholders.
+    *   **Post-Recovery:** Monitor DR environment stability. Plan for failback to primary site once it's restored and stable.
+*   **Playbook 2: Qdrant Vector Database Data Loss/Corruption**
+    *   **Detection:** Application errors related to vector search, inability to query Qdrant, monitoring alerts for Qdrant health or data consistency.
+    *   **Initial Assessment:**
+        1.  Verify the extent of data loss/corruption (specific collections, all collections).
+        2.  Check Qdrant logs for error messages.
+        3.  Attempt basic recovery steps if suggested by Qdrant logs (e.g., restarting pods).
+    *   **Decision:** If data is confirmed lost/corrupted and basic recovery fails, proceed with restoration from backup.
+    *   **Execution (Restore from Qdrant Snapshot):**
+        1.  Identify the latest known good snapshot of the affected Qdrant collection(s) from backup storage (e.g., S3).
+        2.  (If applicable) Scale down or temporarily stop application services that write to/read from the affected Qdrant collection to prevent further issues or inconsistent reads during restoration.
+        3.  Download the snapshot file(s) to a location accessible by the Qdrant cluster or a utility pod.
+        4.  Follow Qdrant's official procedure for restoring a collection from a snapshot. This might involve:
+            *   Ensuring the target collection does not exist or is empty.
+            *   Using a Qdrant API endpoint (e.g., related to `snapshots/recover` or by placing snapshot in a specific recovery directory and restarting/configuring Qdrant). Refer to Qdrant documentation for the precise method for your version.
+        5.  Once Qdrant confirms restoration is complete, verify the collection's health, point count, and perform sample queries.
+        6.  (If applicable) Scale up or restart application services.
+        7.  Monitor application logs and Qdrant metrics closely post-restoration.
+    *   **Post-Recovery:**
+        1.  Investigate the root cause of data loss/corruption.
+        2.  Review backup frequency and snapshot integrity if the RPO was not met.
+*   **Playbook 3: Major Relational Database (e.g., PostgreSQL) Data Corruption**
+    *   [Specific steps to take, similar to Qdrant: identify backup, stop writes, restore using `psql`, verify, restart services]
+*   **Playbook 4: Ransomware Attack**
+    *   [Isolate affected systems, engage security team, determine blast radius, restore from immutable backups to a clean environment, forensic analysis]
 *   *[Add more playbooks as needed for different scenarios]*
 
 ## 6. Capacity Planning

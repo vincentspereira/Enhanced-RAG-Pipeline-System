@@ -96,6 +96,10 @@ scipy==1.15.3
 watchdog==6.0.0
 snowflake-connector-python==3.5.0
 PyMySQL==1.1.0 # For MySQL Connector
+psycopg2-binary==2.9.9 # For PostgreSQL
+pymongo==4.6.0 # For MongoDB
+influxdb-client==1.43.0 # For InfluxDB v2+
+neo4j==5.17.0 # For Neo4j
 
 # Development
 # pytest is also under Testing dependencies, using version 8.1.1 from there.

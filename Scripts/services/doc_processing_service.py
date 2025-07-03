@@ -26,15 +26,23 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 # Import config loader
 try:
     from Scripts.utils.config_loader import get_config_value
+    from Scripts.utils.rabbitmq_producer import RabbitMQProducer # Import RabbitMQProducer
 except ImportError:
     import sys
     sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     try:
         from utils.config_loader import get_config_value
+        from utils.rabbitmq_producer import RabbitMQProducer # Import RabbitMQProducer
     except ImportError as e:
-        logger.error(f"Critical: Failed to import get_config_value for Document Processing Service. Error: {e}")
+        logger.error(f"Critical: Failed to import get_config_value or RabbitMQProducer for Document Processing Service. Error: {e}")
         def get_config_value(env_var_name, yaml_path=None, default=None): # Basic fallback
             return os.getenv(env_var_name, default)
+        # Dummy RabbitMQProducer if import fails
+        class RabbitMQProducer:
+            def __init__(self, *args, **kwargs): logger.error("Dummy RabbitMQProducer initialized.")
+            def publish_message(self, *args, **kwargs): logger.warning("Dummy RabbitMQProducer: publish_message called.")
+            def close(self): logger.info("Dummy RabbitMQProducer: close called.")
+
 
 # --- Configuration ---
 QDRANT_HOST = get_config_value("QDRANT_HOST", yaml_path="vector_store.qdrant.host", default="localhost")
@@ -54,6 +62,7 @@ CHUNK_OVERLAP = int(get_config_value("CHUNK_OVERLAP", yaml_path="document_proces
 app = FastAPI(title="Document Processing Service")
 qdrant_client: Optional[QdrantClient] = None
 embedding_model: Optional[SentenceTransformer] = None
+rabbitmq_producer: Optional[RabbitMQProducer] = None
 
 
 # --- Pydantic Models ---
@@ -125,10 +134,28 @@ async def startup_event():
     else:
         logger.info("Document Processing Service startup complete.")
 
+    # Initialize RabbitMQ Producer
+    global rabbitmq_producer
+    try:
+        # Configuration for RabbitMQ should ideally come from config_loader or env vars
+        # Example: RABBITMQ_HOST, RABBITMQ_PORT, RABBITMQ_USER, RABBITMQ_PASSWORD, RABBITMQ_VHOST
+        # For simplicity, using defaults or expecting environment setup if RabbitMQProducer handles it.
+        rabbitmq_host = get_config_value("RABBITMQ_HOST", default="localhost")
+        # rabbitmq_port = int(get_config_value("RABBITMQ_PORT", default=5672)) # pika default
+        # rabbitmq_user = get_config_value("RABBITMQ_USER")
+        # rabbitmq_password = get_config_value("RABBITMQ_PASSWORD")
+
+        # Assuming RabbitMQProducer can be initialized with just the host or picks up from env
+        rabbitmq_producer = RabbitMQProducer(host=rabbitmq_host) # Adjust constructor as needed
+        logger.info("RabbitMQ Producer initialized.")
+    except Exception as e:
+        logger.error(f"Failed to initialize RabbitMQ Producer: {e}", exc_info=True)
+        rabbitmq_producer = None
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global qdrant_client
+    global qdrant_client, rabbitmq_producer
     logger.info("Document Processing Service shutting down...")
     if qdrant_client:
         try:
@@ -136,6 +163,14 @@ async def shutdown_event():
             pass
         except Exception as e:
             logger.error(f"Error during Qdrant client cleanup (if any): {e}")
+
+    if rabbitmq_producer:
+        try:
+            rabbitmq_producer.close()
+            logger.info("RabbitMQ Producer connection closed.")
+        except Exception as e:
+            logger.error(f"Error closing RabbitMQ Producer connection: {e}", exc_info=True)
+
     logger.info("Document Processing Service shutdown complete.")
 
 
@@ -370,6 +405,33 @@ async def process_document_endpoint(
                     wait=True
                 )
                 logger.info(f"{len(points_to_upsert)} chunks for document '{parent_doc_id}' successfully indexed into Qdrant.")
+
+            # Publish event to RabbitMQ
+            if rabbitmq_producer:
+                event_message = {
+                    "event_type": "document_processed",
+                    "parent_document_id": str(parent_doc_id),
+                    "filename": filename,
+                    "chunks_indexed": len(chunks),
+                    "status": "indexed_chunked",
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                # Define your exchange and routing key based on your RabbitMQ setup
+                # For this example, using a direct exchange (default) and routing key 'doc_events'
+                # Queue 'document_processing_events' should be bound to this routing key on an exchange.
+                # This assumes RabbitMQProducer's publish_message handles exchange/routing_key declaration or uses defaults.
+                try:
+                    rabbitmq_producer.publish_message(
+                        exchange_name='', # Default exchange
+                        routing_key='document_processing_events', # Queue name
+                        message_body=json.dumps(event_message)
+                    )
+                    logger.info(f"Published 'document_processed' event for {parent_doc_id} to RabbitMQ.")
+                except Exception as mq_e:
+                    logger.error(f"Failed to publish document_processed event to RabbitMQ for {parent_doc_id}: {mq_e}", exc_info=True)
+            else:
+                logger.warning("RabbitMQ producer not available. Skipping event publishing.")
+
 
             return ProcessingResponse(
                 message=f"Document processed. {len(chunks)} chunks indexed.",

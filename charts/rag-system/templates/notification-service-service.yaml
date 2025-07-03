@@ -1,0 +1,18 @@
+{{- if .Values.notificationService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rag-system.componentFullname" (dict "component" .Values.notificationService "context" .) }}
+  labels:
+    {{- include "rag-system.labels" . | nindent 4 }}
+    app.kubernetes.io/component: {{ .Values.notificationService.name }}
+spec:
+  type: {{ .Values.notificationService.service.type }}
+  ports:
+    - port: {{ .Values.notificationService.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "rag-system.selectorLabelsComponent" (dict "componentName" .Values.notificationService.name "context" .) | nindent 4 }}
+{{- end }}

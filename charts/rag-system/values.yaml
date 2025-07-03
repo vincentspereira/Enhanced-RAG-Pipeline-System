@@ -67,6 +67,11 @@ ragQueryService:
     limits:
       cpu: "1000m"
       memory: "2Gi"
+  gpus: # Optional GPU configuration
+    limits:
+      # nvidia.com/gpu: "1" # Example: Request 1 GPU
+    requests:
+      # nvidia.com/gpu: "1" # Example: Request 1 GPU
   config:
     RAG_SERVICE_PORT: "8001"
     # Conditional QDRANT_HOST and REDIS_HOST based on whether subcharts are enabled
@@ -98,6 +103,11 @@ docProcessingService:
     limits:
       cpu: "1000m"
       memory: "1Gi"
+  gpus: # Optional GPU configuration
+    limits:
+      # nvidia.com/gpu: "1" # Example: Request 1 GPU
+    requests:
+      # nvidia.com/gpu: "1" # Example: Request 1 GPU
   config:
     DOC_PROCESSING_SERVICE_PORT: "8002"
     QDRANT_HOST: {{ .Values.qdrant.enabled | ternary (printf "%s-qdrant" .Release.Name) "qdrant-service" }}
@@ -108,6 +118,41 @@ docProcessingService:
     LOGGING_LEVEL: "INFO"
     CHUNK_SIZE: "1000" # Characters for RecursiveCharacterTextSplitter
     CHUNK_OVERLAP: "200" # Characters for overlap
+
+notificationService:
+  enabled: true
+  name: notification-service
+  containerPort: 8003
+  service:
+    type: ClusterIP
+    port: 8003
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  config: # Environment variables for the notification service
+    NOTIFICATION_SERVICE_PORT: "8003"
+    LOGGING_LEVEL: "INFO"
+    # SMTP settings should be configured via Kubernetes Secrets and mounted as env vars
+    # Example of how they would be referenced if secrets are set up:
+    # SMTP_SERVER: {{ .Values.notificationService.secrets.smtpServer | quote }}
+    # SMTP_PORT: {{ .Values.notificationService.secrets.smtpPort | quote }}
+    # SMTP_USERNAME: {{ .Values.notificationService.secrets.smtpUsername | quote }}
+    # SMTP_PASSWORD: {{ .Values.notificationService.secrets.smtpPassword | quote }}
+    # SENDER_EMAIL: {{ .Values.notificationService.secrets.senderEmail | quote }}
+  secrets: # Configuration for SMTP secrets
+    create: true # Set to false if using an existing secret
+    existingSecretName: "" # Name of an existing K8s secret to use for SMTP credentials
+    # The following values are used if create=true and existingSecretName is empty.
+    # FOR PRODUCTION, use existingSecretName and manage the secret outside the chart.
+    smtpServer: "smtp.example.com" # Example, replace or use existingSecretName
+    smtpPort: "587"
+    smtpUsername: "user@example.com"
+    smtpPassword: "password"
+    senderEmail: "noreply@example.com"
 
 # --- Subchart configurations for Dependencies ---
 

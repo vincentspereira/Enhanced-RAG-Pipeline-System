@@ -106,6 +106,8 @@ docProcessingService:
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
     LOGGING_LEVEL: "INFO"
+    CHUNK_SIZE: "1000" # Characters for RecursiveCharacterTextSplitter
+    CHUNK_OVERLAP: "200" # Characters for overlap
 
 # --- Subchart configurations for Dependencies ---
 

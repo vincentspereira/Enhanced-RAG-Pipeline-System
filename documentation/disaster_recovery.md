@@ -102,6 +102,28 @@ This document outlines the disaster recovery (DR) procedures and strategies for 
             4.  **Import Definitions**: If restoring to a fresh instance or if definitions are suspect, import the last known good definitions JSON via the management UI or `rabbitmqadmin`.
             5.  **Verification**: Check vhosts, queues, exchanges, user permissions. Test message publishing and consumption.
 
+    *   **Cache (Redis)**:
+        *   **Context**: Redis is currently used by the RAG Query Service for caching Qdrant search results and LLM-generated answers to improve performance and reduce load on downstream services.
+        *   **Default Assumption (Volatile Cache)**:
+            *   For its current use case as a cache, data stored in Redis is considered volatile and can be rebuilt or repopulated by the application if Redis is restarted or data is lost.
+            *   If Redis is deployed without persistence enabled (e.g., default for many simple Helm chart setups for caching, or using `emptyDir` volumes in K8s), no specific data backup procedures are strictly necessary for disaster recovery *of the cache content itself*. The primary DR concern is the quick redeployment/availability of the Redis service.
+        *   **Backup Strategy (If Redis Persistence is Enabled and Deemed Critical)**:
+            *   If, in the future, Redis is used to store more critical, non-transient data, or if even cached data is very expensive to regenerate and warrants persistence, then persistence must be enabled in the Redis deployment (e.g., RDB snapshots + AOF logging, configured with PVs).
+            *   **Methods**:
+                1.  **Redis RDB Snapshots**: Redis can be configured to periodically save snapshots of its dataset to an `.rdb` file.
+                    *   These RDB files, stored on Redis's PV, would then need to be backed up to external, durable storage (e.g., S3, GCS). This can be done via a K8s CronJob that copies the RDB file.
+                2.  **Append-Only File (AOF)**: Provides better durability than RDB snapshots alone. The AOF log can also be backed up.
+                3.  **PersistentVolume (PV) Snapshots**: If Redis is using a PV for its data directory, the underlying storage provider's PV snapshot mechanism is the most common way to back up its state.
+            *   **Frequency**: Depends on the criticality of the data if Redis is used beyond a simple cache (e.g., daily PV snapshots).
+            *   **Storage**: External, durable, secure storage.
+        *   **Restoration Strategy (If Persistent Data was Backed Up)**:
+            1.  **Provision New Redis Instance**: With PVs configured for persistence.
+            2.  **Restore PV from Snapshot**: If PV snapshots were used.
+            3.  **Or, Restore RDB file**: If RDB file backups were taken, place the `.rdb` file in the new Redis instance's data directory before starting Redis. Redis will load it on startup.
+            4.  **Start Redis**.
+            5.  **Verification**: Check connectivity and if data (if any was expected to persist) is present.
+        *   **Current System Implication**: For the RAG Query Service cache, if Redis restarts without persisted data, the service will experience cache misses, leading to increased latency and load on Qdrant/Ollama until the cache repopulates. This performance degradation is the primary impact, not data loss in the traditional sense for a cache. The DR plan should focus on rapidly restoring Redis *service availability*.
+
 *   **Infrastructure Backup:**
     *   [Backup of IaC scripts (Terraform, Ansible)]
     *   [Backup of Kubernetes cluster state (etcd backups)]

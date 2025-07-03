@@ -78,6 +78,8 @@ polars==0.20.10 # For Polars DataFrame integration
 duckdb==0.10.0 # For DuckDB in-process OLAP
 pika==1.3.2 # For RabbitMQ integration
 dask[dataframe]==2024.1.0 # For Dask parallel processing, includes dask and pandas
+langchain==0.1.16 # For text splitting and other LLM utilities
+langchain-core==0.1.45 # Core components for Langchain
 
 # Monitoring, Caching & Search Features
 prometheus-client # General Prometheus client library

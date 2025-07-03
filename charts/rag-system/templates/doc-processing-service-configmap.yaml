@@ -17,4 +17,6 @@ data:
   EMBEDDING_MODEL_NAME: {{ .Values.docProcessingService.config.EMBEDDING_MODEL_NAME | quote }}
   MODEL_DEVICE: {{ .Values.docProcessingService.config.MODEL_DEVICE | quote }}
   LOGGING_LEVEL: {{ .Values.docProcessingService.config.LOGGING_LEVEL | quote }}
+  CHUNK_SIZE: {{ .Values.docProcessingService.config.CHUNK_SIZE | quote }}
+  CHUNK_OVERLAP: {{ .Values.docProcessingService.config.CHUNK_OVERLAP | quote }}
 {{- end }}

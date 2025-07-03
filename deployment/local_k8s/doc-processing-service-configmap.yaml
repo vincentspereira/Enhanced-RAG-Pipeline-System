@@ -19,6 +19,10 @@ data:
   EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2" # Default model
   MODEL_DEVICE: "cpu" # "cpu" or "cuda". Ensure Docker image and K8s node support CUDA if "cuda".
 
+  # Chunking Configuration
+  CHUNK_SIZE: "1000"
+  CHUNK_OVERLAP: "200"
+
   # Example for future MongoDB integration for metadata storage
   # MONGO_HOST: "mongodb-service" # K8s service name for MongoDB
   # MONGO_PORT: "27017"

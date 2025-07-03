@@ -35,8 +35,6 @@ class RabbitMQProducer:
             )
             self.connection = pika.BlockingConnection(parameters)
             self.channel = self.connection.channel()
-            # Example: Ensure a default exchange if needed, or let publisher specify
-            # self.channel.exchange_declare(exchange='default_exchange', exchange_type='direct', durable=True)
             logger.info(f"RabbitMQ Producer connected to {self.host}:{self.port}{self.virtual_host}")
         except pika.exceptions.AMQPConnectionError as e:
             logger.error(f"Failed to connect to RabbitMQ at {self.host}:{self.port}: {e}", exc_info=True)
@@ -52,36 +50,41 @@ class RabbitMQProducer:
             logger.warning("RabbitMQ connection lost or not established. Attempting to reconnect...")
             self._connect() # This will raise an exception if reconnection fails
 
-    def publish_message(self, exchange_name: str, routing_key: str, message_body: str,
+    def publish_message(self, message_body: str, routing_key: str,
+                        exchange_name: str = '', exchange_type: str = 'direct',
                         properties: Optional[pika.BasicProperties] = None):
         """
-        Publishes a message to the specified exchange with the given routing key.
+        Publishes a message.
 
         Args:
-            exchange_name (str): The name of the exchange to publish to.
-                                 Use an empty string for the default exchange (direct to queue).
-            routing_key (str): The routing key. For default exchange, this is usually the queue name.
             message_body (str): The message body, typically a JSON string.
-            properties (Optional[pika.BasicProperties]): Message properties (e.g., delivery_mode).
+            routing_key (str): The routing key. For default/direct exchange, this is usually the queue name.
+                               For topic exchange, it's the topic string (e.g., "doc.processed.pdf").
+            exchange_name (str): The name of the exchange to publish to. Default is the nameless exchange.
+            exchange_type (str): Type of the exchange (e.g., 'direct', 'topic', 'fanout').
+                                 Durable exchanges are assumed.
+            properties (Optional[pika.BasicProperties]): Message properties.
+                                 Example for priority: pika.BasicProperties(priority=5)
+                                 Default makes messages persistent.
         """
-        self._ensure_connected() # Make sure connection is live
+        self._ensure_connected()
         if not self.channel:
             logger.error("Cannot publish message: RabbitMQ channel is not available.")
             return
 
         if properties is None:
-            # Default to persistent messages
             properties = pika.BasicProperties(delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE)
 
         try:
-            # It's good practice for consumers to declare queues and exchanges they need.
-            # However, a producer might declare them too for robustness or if it's the first one up.
-            # Example: self.channel.queue_declare(queue=routing_key, durable=True)
-            # Example: self.channel.exchange_declare(exchange=exchange_name, exchange_type='direct', durable=True)
-            # Example: self.channel.queue_bind(exchange=exchange_name, queue=routing_key)
+            # Declare the exchange if it's not the default nameless one.
+            # This makes the producer more robust if the exchange doesn't exist.
+            # Consumers should also declare exchanges they bind to.
+            if exchange_name: # Non-empty exchange name
+                self.channel.exchange_declare(exchange=exchange_name, exchange_type=exchange_type, durable=True)
+                logger.debug(f"Exchange '{exchange_name}' ({exchange_type}) ensured.")
 
             self.channel.basic_publish(
-                exchange=exchange_name,
+                exchange=exchange_name, # Use provided exchange name
                 routing_key=routing_key,
                 body=message_body,
                 properties=properties

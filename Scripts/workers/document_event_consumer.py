@@ -47,11 +47,33 @@ class DocumentEventConsumer:
         self.connection = pika.BlockingConnection(parameters)
         self.channel = self.connection.channel()
 
-        # Declare the queue (idempotent operation)
-        # This ensures the queue exists before trying to consume from it.
-        # It's good practice for consumers to declare what they need.
-        self.channel.queue_declare(queue=self.queue_name, durable=True)
-        logger.info(f"RabbitMQ Consumer connected and queue '{self.queue_name}' is ready.")
+        # Declare the exchange (topic exchange)
+        self.exchange_name = 'document_events_exchange' # Should match producer
+        self.channel.exchange_declare(exchange=self.exchange_name, exchange_type='topic', durable=True)
+        logger.info(f"Topic exchange '{self.exchange_name}' ensured.")
+
+        # Declare the queue this consumer will use.
+        # For DLQ: arguments={'x-dead-letter-exchange': 'my_dlx', 'x-dead-letter-routing-key': 'dlq_key'}
+        # For Priority Queue: arguments={'x-max-priority': 10} (Value 1-255, typically 1-10)
+        # These arguments are set during queue declaration on the RabbitMQ server, often by an admin or deployment script.
+        # Client can declare queue with these args if it has permissions and queue doesn't exist with different args.
+        queue_arguments = {}
+        # Example if setting up DLQ (ensure 'my_dlx' exchange exists)
+        # queue_arguments['x-dead-letter-exchange'] = 'my_dlx'
+        # Example for priority (ensure producer sends messages with priority property)
+        # queue_arguments['x-max-priority'] = 10
+
+        self.channel.queue_declare(queue=self.queue_name, durable=True, arguments=queue_arguments)
+        logger.info(f"Queue '{self.queue_name}' declared (durable=True). Arguments: {queue_arguments}")
+
+        # Bind the queue to the exchange with a routing key pattern
+        # Example: "doc.processed.*" to receive all processed document events regardless of file type.
+        # Or "doc.processed.pdf" to only receive events for PDF files.
+        binding_key = "doc.processed.*" # Listen to all doc.processed events
+        self.channel.queue_bind(exchange=self.exchange_name, queue=self.queue_name, routing_key=binding_key)
+        logger.info(f"Queue '{self.queue_name}' bound to exchange '{self.exchange_name}' with binding key '{binding_key}'.")
+
+        logger.info(f"RabbitMQ Consumer connected and setup complete for queue '{self.queue_name}'.")
 
     def _message_callback(self, ch: pika.adapters.blocking_connection.BlockingChannel,
                           method: pika.spec.Basic.Deliver,
@@ -60,7 +82,9 @@ class DocumentEventConsumer:
         """Callback function to process messages from the queue."""
         try:
             message_str = body.decode('utf-8')
-            logger.info(f"Received message: {message_str[:200]}...") # Log snippet
+            # Log received message priority if present
+            priority = properties.priority if properties and hasattr(properties, 'priority') else 'N/A'
+            logger.info(f"Received message (Priority: {priority}, RoutingKey: {method.routing_key}): {message_str[:200]}...")
 
             message_data = json.loads(message_str)
 
@@ -72,25 +96,19 @@ class DocumentEventConsumer:
                 chunks = message_data.get("chunks_indexed", 0)
                 status = message_data.get("status", "N/A")
                 logger.info(f"Processing 'document_processed' event: ID={doc_id}, File={filename}, Chunks={chunks}, Status={status}")
-                # Add actual processing logic here:
-                # - Update a database
-                # - Trigger another workflow (e.g., via n8n_client)
-                # - Send a notification
+                # Add actual processing logic here
             else:
-                logger.warning(f"Received unknown event_type: '{event_type}'")
+                logger.warning(f"Received unknown event_type: '{event_type}' from routing key '{method.routing_key}'")
 
-            # Acknowledge the message was processed successfully
             ch.basic_ack(delivery_tag=method.delivery_tag)
             logger.debug(f"Message acknowledged: {method.delivery_tag}")
 
         except json.JSONDecodeError:
             logger.error(f"Failed to decode JSON message: {body[:200]}")
-            # Decide how to handle non-JSON messages: nack, reject, or log and ack
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False) # Don't requeue malformed messages
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            # Negative acknowledgement, message could be requeued or sent to DLQ depending on queue setup
-            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False) # Be careful with requeue=True to avoid poison pills
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     def start_consuming(self):
         """Start consuming messages from the queue."""

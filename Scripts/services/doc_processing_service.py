@@ -443,12 +443,18 @@ async def process_document_endpoint(
                 # Queue 'document_processing_events' should be bound to this routing key on an exchange.
                 # This assumes RabbitMQProducer's publish_message handles exchange/routing_key declaration or uses defaults.
                 try:
+                    file_extension = (filename.split('.')[-1] if filename and '.' in filename else "unknown").lower()
+                    routing_key_event = f"doc.processed.{file_extension}"
+
                     rabbitmq_producer.publish_message(
-                        exchange_name='', # Default exchange
-                        routing_key='document_processing_events', # Queue name
-                        message_body=json.dumps(event_message)
+                        message_body=json.dumps(event_message),
+                        routing_key=routing_key_event,
+                        exchange_name='document_events_exchange', # Topic exchange
+                        exchange_type='topic'
+                        # For priority, add: properties=pika.BasicProperties(priority=...)
+                        # Priority value depends on queue's max priority setting.
                     )
-                    logger.info(f"Published 'document_processed' event for {parent_doc_id} to RabbitMQ.")
+                    logger.info(f"Published 'document_processed' event for {parent_doc_id} (key: {routing_key_event}) to exchange 'document_events_exchange'.")
                 except Exception as mq_e:
                     logger.error(f"Failed to publish document_processed event to RabbitMQ for {parent_doc_id}: {mq_e}", exc_info=True)
             else:

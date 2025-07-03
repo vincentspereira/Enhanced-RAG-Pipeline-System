@@ -122,11 +122,27 @@ This document outlines the disaster recovery (DR) procedures and strategies for 
             3.  **Or, Restore RDB file**: If RDB file backups were taken, place the `.rdb` file in the new Redis instance's data directory before starting Redis. Redis will load it on startup.
             4.  **Start Redis**.
             5.  **Verification**: Check connectivity and if data (if any was expected to persist) is present.
-        *   **Current System Implication**: For the RAG Query Service cache, if Redis restarts without persisted data, the service will experience cache misses, leading to increased latency and load on Qdrant/Ollama until the cache repopulates. This performance degradation is the primary impact, not data loss in the traditional sense for a cache. The DR plan should focus on rapidly restoring Redis *service availability*.
+        *   **Current System Implication**: For the RAG Query Service cache, if Redis restarts without persisted data (i.e., persistence is disabled in its deployment), the service will experience cache misses. This leads to increased latency and higher load on Qdrant and Ollama until the cache repopulates. This performance degradation is the primary impact, not critical data loss. The DR plan for a non-persistent cache focuses on rapidly restoring Redis *service availability* (e.g., ensuring the Redis deployment/StatefulSet can restart quickly).
+        *   **If using Bitnami Redis Helm Chart with Persistence**: If `redis.enabled: true` in the parent chart and the Bitnami subchart is configured with `persistence.enabled: true` (e.g., for a more durable cache or other uses), it will use a PersistentVolumeClaim (PVC). In this case, the DR strategy for Redis data aligns with general PV snapshot procedures:
+            *   Regularly snapshot the PV used by Redis.
+            *   Restoration involves restoring the PV from the snapshot and ensuring the new Redis pod/StatefulSet attaches to it.
+
+### 3.y Application & System Configurations Backup
+
+*   **Context**: This covers the application code, Kubernetes manifests, Helm charts, Dockerfiles, and any critical non-sensitive configuration files not managed as K8s Secrets.
+*   **Backup Strategy**:
+    *   **Version Control (Git)**: All code, Dockerfiles, Kubernetes YAML manifests (`deployment/local_k8s/`), Helm chart sources (`charts/rag-system/`), and general documentation (`docs/`, `documentation/`) MUST be stored in a Git repository (e.g., GitHub, GitLab).
+    *   **Regular Commits & Pushes**: Developers should commit and push changes frequently to a central Git repository.
+    *   **Branching Strategy**: A sound branching strategy (e.g., Gitflow, GitHub Flow) should be used to manage features, releases, and hotfixes.
+    *   **Backup of Git Repository**: The Git hosting provider (e.g., GitHub) is responsible for the primary backup of the repository itself. For extra precaution, organizations might implement their own periodic clones/backups of critical repositories to a separate storage location.
+*   **Restoration Strategy**:
+    *   **Code & Manifests**: `git clone` the repository to the desired commit/branch/tag.
+    *   **Deployment**: Use the cloned Helm charts (`helm install/upgrade`) or Kubernetes manifests (`kubectl apply`) to redeploy the application and its configuration.
+    *   **Sensitive Configurations (K8s Secrets)**: As noted elsewhere, Kubernetes Secrets (for API keys, passwords) should be managed and backed up according to their own secure procedures (e.g., backed up as part of etcd backups, or managed via tools like Sealed Secrets or Vault which have their own DR processes). This Git repository should primarily store the *definitions* of how these secrets are used (e.g., Helm templates referencing secret names), not the secret data itself.
 
 *   **Infrastructure Backup:**
-    *   [Backup of IaC scripts (Terraform, Ansible)]
-    *   [Backup of Kubernetes cluster state (etcd backups)]
+    *   [Backup of IaC scripts (Terraform, Ansible for K8s cluster provisioning itself, if applicable)]
+    *   [Backup of Kubernetes cluster state (etcd backups) - This is critical for full cluster DR]
 *   **Verification:**
     *   [Procedures for regularly verifying backup integrity and restorability]
 

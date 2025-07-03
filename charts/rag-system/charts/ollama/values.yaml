@@ -1,0 +1,65 @@
+# Default values for the local Ollama subchart.
+replicaCount: 1
+
+image:
+  repository: ollama/ollama
+  pullPolicy: IfNotPresent
+  # Specify Ollama version, e.g., 0.1.29 or latest
+  tag: "0.1.29"
+
+service:
+  type: ClusterIP
+  port: 11434 # Ollama API port
+
+# Resources for the Ollama pod. Adjust based on expected model sizes and usage.
+# Ollama can be memory and CPU intensive, and very much so if using GPUs.
+resources:
+  requests:
+    cpu: "500m"
+    memory: "2Gi" # Base memory, actual usage depends on models loaded
+  limits:
+    cpu: "2000m" # 2 CPU cores
+    memory: "8Gi" # Allow for larger models
+  # gpu: # Uncomment and configure if you have GPU nodes and want Ollama to use them
+    # type: "nvidia.com/gpu" # Or your specific GPU resource type
+    # count: 1
+
+# Persistence for Ollama models
+# This uses a PersistentVolumeClaim. Ensure a StorageClass is available in your K8s cluster.
+persistence:
+  enabled: true
+  # storageClassName: "standard" # Or your specific StorageClass, e.g., "gp2", "local-path"
+  # existingClaim: "" # Optionally use an existing PVC
+  accessModes:
+    - ReadWriteOnce
+  size: "20Gi" # Adjust based on the number and size of models you plan to use
+
+# Service Account (optional, usually not needed for Ollama itself unless specific K8s integrations)
+serviceAccount:
+  create: false
+  name: ""
+
+# Pod Security Context (example)
+podSecurityContext: {}
+  # fsGroup: 1000 # Ollama images might run as root to access /root/.ollama
+
+# Container Security Context (example)
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # runAsUser: 0 # Ollama official image runs as root
+
+# Node selector, tolerations, affinity for advanced scheduling (e.g., GPU nodes)
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra environment variables for Ollama container if needed
+extraEnv: {}
+  # OLLAMA_NUM_PARALLEL: "1"
+  # OLLAMA_MAX_LOADED_MODELS: "1"
+
+# Command and args override (rarely needed for official ollama image)
+# command: []
+# args: []

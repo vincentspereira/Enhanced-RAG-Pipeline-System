@@ -44,6 +44,18 @@ To run specific tests:
 
 Integration tests might require certain services (like Qdrant, Redis, or the application services themselves) to be running. Refer to the specific test files or `DEPLOY_LOCAL_TEST_GUIDE.md` for details on their prerequisites. Unit tests are designed to run in isolation, often using mocks.
 
+### End-to-End (E2E) Tests
+
+Basic E2E tests are located in `Scripts/tests/e2e/`. These tests require the entire system (or relevant parts of it) to be deployed and running.
+To run them:
+1.  Ensure all services and dependencies are deployed and accessible as per `DEPLOY_LOCAL_TEST_GUIDE.md`.
+2.  Set necessary environment variables (e.g., `TEST_GATEWAY_URL`, `TEST_API_KEY`) as specified in the E2E test script or the deployment guide.
+3.  Execute the E2E test script directly using Python:
+    ```bash
+    python Scripts/tests/e2e/basic_rag_flow_test.py
+    ```
+Check the script's output for pass/fail status and logs for details.
+
 ## Pull Request Process
 1. Update the README.md with details of changes to the interface
 2. Update the requirements.txt with any new dependencies

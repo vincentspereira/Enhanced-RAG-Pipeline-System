@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ollama.fullname" . }}
+  labels:
+    {{- include "ollama.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "ollama.fullname" . }} # Headless service for StatefulSet
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ollama.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ollama.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "ollama.serviceAccountName" . }}
+      {{- else if .Values.serviceAccount.name }}
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.command }}
+          command: {{- toYaml .Values.command | nindent 12 }}
+          {{- end }}
+          {{- if .Values.args }}
+          args: {{- toYaml .Values.args | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.extraEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: ollama-models-storage
+              mountPath: /root/.ollama # Default Ollama models directory
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: / # Ollama root usually returns "Ollama is running"
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: ollama-models-storage
+      spec:
+        accessModes: {{ .Values.persistence.accessModes | toYaml }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}
+      {{- if .Values.persistence.storageClassName }}
+      {{- if (eq "-" .Values.persistence.storageClassName) }}
+        storageClassName: ""
+      {{- else }}
+        storageClassName: "{{ .Values.persistence.storageClassName }}"
+      {{- end }}
+      {{- end }}
+  {{- end }}
+{{- /* vim: set filetype=yaml: */ -}}

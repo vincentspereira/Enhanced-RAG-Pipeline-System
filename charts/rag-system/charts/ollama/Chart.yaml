@@ -1,0 +1,8 @@
+apiVersion: v2
+name: ollama
+description: A simple local subchart to deploy Ollama for the RAG System.
+type: application # Or 'library' if it's only meant as a building block
+version: 0.1.0
+appVersion: "0.1.29" # Corresponds to an Ollama version, update as needed
+
+# This local subchart does not have its own dependencies.

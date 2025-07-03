@@ -1,57 +1,40 @@
 # Default values for rag-system chart.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
-
 replicaCount: 1
 
 image:
   repository: your-dockerhub-username/rag-system # TODO: Update with your image repository
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest" # Or specific version like "iter9"
+  tag: "iter14-local" # Updated for iteration
 
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
 # -- Service configurations for each microservice --
-
 internalApiGateway:
   enabled: true
-  name: internal-api-gateway # Used for component naming
+  name: internal-api-gateway
   containerPort: 8000
   service:
     type: NodePort
     port: 80
-    # nodePort: 30080
   resources:
     requests:
-      cpu: "100m"
-      memory: "128Mi"
+      cpu: "150m"
+      memory: "256Mi"
     limits:
-      cpu: "500m"
+      cpu: "1000m"
       memory: "512Mi"
   config:
-    # Note: The context for include is '.', so .Release.Name works.
-    # For component names, we pass the specific component's values to the helper.
     RAG_QUERY_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.ragQueryService \"context\" .) }}:{{ .Values.ragQueryService.service.port }}"
     DOC_PROCESSING_SERVICE_URL: "http://{{ include \"rag-system.componentFullname\" (dict \"component\" .Values.docProcessingService \"context\" .) }}:{{ .Values.docProcessingService.service.port }}"
     API_GATEWAY_PORT: {{ .Values.internalApiGateway.containerPort | quote }}
     LOGGING_LEVEL: "INFO"
-    # VALID_API_KEYS_CSV: "changeme-local-key1,changeme-local-key2" # This will be sourced from a secret
   apiKeys:
-    # If existingSecret.name is provided, the chart will use this existing Kubernetes Secret.
-    # The Secret must contain a key (specified by existingSecret.keyName) whose value is the comma-separated API keys.
     existingSecret:
-      name: "" # e.g., "rag-gateway-apikeys-secret"
-      keyName: "api-keys-csv" # Key in the secret holding the CSV string of API keys
-
-    # If existingSecret.name is NOT provided AND createSecret is true,
-    # a new Secret will be created by the chart using the directValues.
-    # THIS IS INTENDED FOR LOCAL DEVELOPMENT/TESTING ONLY.
-    # For production, always use a pre-existing, securely managed Secret.
-    createSecret: false # Default to false, requiring an existing secret
-    directValues: "devkey1-from-values,devkey2-from-values" # Example if createSecret is true & no existingSecret
+      name: "rag-gateway-apikeys-secret"
+      keyName: "api-keys-csv"
+    createSecret: false
 
 ragQueryService:
   enabled: true
@@ -62,27 +45,29 @@ ragQueryService:
     port: 8001
   resources:
     requests:
-      cpu: "200m"
-      memory: "512Mi"
-    limits:
-      cpu: "1000m"
+      cpu: "500m"
       memory: "2Gi"
+    limits:
+      cpu: "2000m"
+      memory: "6Gi"
   config:
     RAG_SERVICE_PORT: "8001"
-    # Conditional QDRANT_HOST and REDIS_HOST based on whether subcharts are enabled
     QDRANT_HOST: {{ .Values.qdrant.enabled | ternary (printf "%s-qdrant" .Release.Name) "qdrant-service" }}
-    QDRANT_PORT: "6333" # Usually fixed by Qdrant chart or manual service
+    QDRANT_PORT: "6333"
     QDRANT_COLLECTION_NAME: "documents"
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
-    OLLAMA_API_URL: "http://{{ .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}" # Connect to user-specified Ollama service
+    OLLAMA_API_URL: "http://{{ .Values.ollama.enabled | ternary (printf "%s-ollama" .Release.Name) .Values.ollama.externalConfig.service.name }}:{{ .Values.ollama.externalConfig.service.port }}"
     LLM_MODEL_NAME: "llama2"
     LOGGING_LEVEL: "INFO"
-    REDIS_HOST: {{ .Values.redis.enabled | ternary (printf "%s-redis-master" .Release.Name) "redis-service" }} # Bitnami Redis chart often names master service like this
-    REDIS_PORT: "6379" # Usually fixed by Redis chart or manual service
+    REDIS_HOST: {{ .Values.redis.enabled | ternary (printf "%s-redis-master" .Release.Name) "redis-service" }}
+    REDIS_PORT: "6379"
+    # REDIS_PASSWORD: "" # Sourced from secret if redis.auth.existingSecret is set
     REDIS_DB_RAG_CACHE: "1"
     SEARCH_RESULTS_CACHE_TTL_SECONDS: "3600"
     LLM_ANSWER_CACHE_TTL_SECONDS: "86400"
+    SEMANTIC_SEARCH_TOP_K_CANDIDATES: "50"
+    RRF_K_CONSTANT: "60"
 
 docProcessingService:
   enabled: true
@@ -93,11 +78,11 @@ docProcessingService:
     port: 8002
   resources:
     requests:
-      cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "1000m"
+      cpu: "300m"
       memory: "1Gi"
+    limits:
+      cpu: "1500m"
+      memory: "3Gi"
   config:
     DOC_PROCESSING_SERVICE_PORT: "8002"
     QDRANT_HOST: {{ .Values.qdrant.enabled | ternary (printf "%s-qdrant" .Release.Name) "qdrant-service" }}
@@ -106,94 +91,57 @@ docProcessingService:
     EMBEDDING_MODEL_NAME: "all-MiniLM-L6-v2"
     MODEL_DEVICE: "cpu"
     LOGGING_LEVEL: "INFO"
-    CHUNK_SIZE: "1000" # Characters for RecursiveCharacterTextSplitter
-    CHUNK_OVERLAP: "200" # Characters for overlap
+    CHUNK_SIZE: "1000"
+    CHUNK_OVERLAP: "200"
 
 # --- Subchart configurations for Dependencies ---
-
-# Qdrant subchart values (from https://github.com/qdrant/qdrant-helm)
-# Users can override these by passing their own values file or using --set qdrant.xxx
 qdrant:
-  enabled: false # Set to true to deploy Qdrant as a subchart
-  # Example overrides for the Qdrant subchart:
-  # replicaCount: 1
+  enabled: false
+  # fullnameOverride: {{ printf "%s-qdrant" .Release.Name }}
   # persistence:
-  #   enabled: false # For local dev, true for production
-  #   size: 5Gi
-  # service:
-  #   type: ClusterIP
-  #   httpPort: 6333
-  #   grpcPort: 6334
-  #   name: qdrant # This name might be overridden by Helm's fullname templating for subcharts
-                 # The QDRANT_HOST above uses {{ .Release.Name }}-qdrant for predictability.
+  #   size: 10Gi
 
-# Redis subchart values (from Bitnami Redis chart: https://github.com/bitnami/charts/tree/main/bitnami/redis)
-# Users can override these.
 redis:
-  enabled: false # Set to true to deploy Redis as a subchart
-  # Example overrides for the Bitnami Redis subchart:
-  # architecture: standalone # or "replication" or "cluster"
-  # auth:
-  #   enabled: false # Set to true and provide a password for production
-  #   # password: "yourredispassword"
-  # master:
-  #   persistence:
-  #     enabled: false # For local dev cache, true if persistence needed
-  #     size: 2Gi
-  # replica:
-  #   replicaCount: 0 # For standalone
-
-# Ollama Configuration
-# This section configures how the RAG Query Service connects to an Ollama instance.
-# IMPORTANT: This chart DOES NOT deploy Ollama itself by default. You are expected to have
-# an Ollama instance running and accessible within your Kubernetes cluster.
-# The `ollama.service.name` should be the Kubernetes service name of your Ollama deployment.
-ollama:
-  # enabled: false # This flag would be used if Ollama were a subchart dependency. Currently not the case.
-  # If you were to add Ollama as a subchart (e.g., a community chart) in Chart.yaml,
-  # you would set 'enabled: true' here and configure its subchart values below.
-  # For example:
-  # communityChartValues:
-  #   image: ollama/ollama:latest
-  #   persistence:
-  #     enabled: true # etc.
-
-  # Configuration for connecting to YOUR deployed Ollama service:
-  service:
-    name: "ollama-service" # REQUIRED: Update this to the K8s service name of your Ollama deployment.
-                           # Example: If you deployed Ollama via its own manifest/chart and its service is named "my-ollama", set this to "my-ollama".
-    port: 11434            # Standard Ollama API port.
-  # The RAG Query Service will construct its OLLAMA_API_URL using:
-  # http://{{ .Values.ollama.service.name }}:{{ .Values.ollama.service.port }}
-  # So, ensure these values correctly point to your running Ollama service.
-
-  # If ollama were a subchart, you'd have its specific values here:
-  # image:
-  #   repository: ollama/ollama
-  #   tag: latest
-  # persistence:
-  #   enabled: true
-  #   size: 20Gi # For models
-
-# RabbitMQ subchart values (from Bitnami RabbitMQ chart)
-rabbitmq:
-  enabled: false # Set to true to deploy RabbitMQ as a subchart
-  # Example overrides for the Bitnami RabbitMQ subchart:
-  # fullnameOverride: {{ printf "%s-rabbitmq" .Release.Name }} # Ensures predictable service name
+  enabled: false
+  # fullnameOverride: {{ printf "%s-redis" .Release.Name }} # Bitnami chart uses -master suffix
   auth:
-    username: "user" # Default user for local dev
-    password: "password" # Default password for local dev. CHANGE FOR PRODUCTION (use secrets).
+    enabled: false # Set to true to enable password auth for Redis
+    # existingSecret: "" # Name of K8s Secret holding the Redis password, e.g., "my-redis-secret"
+    # existingSecretPasswordKey: "redis-password" # Key in the secret for the password
+    # password: "your-strong-password" # If not using existingSecret, Bitnami chart creates a secret with this. NOT RECOMMENDED for direct values.
+  master:
+    persistence:
+      enabled: false # Typically false for cache
+
+ollama:
+  enabled: false
+  # If enabled, local subchart from ./charts/ollama is deployed.
+  # Service name will be {{ .Release.Name }}-ollama.
+  # Configure subchart values directly under 'ollama:' key, e.g.:
+  # image:
+  #   tag: "0.1.29"
+  # persistence:
+  #   size: "50Gi"
+  externalConfig: # Used if ollama.enabled is false
+    service:
+      name: "ollama-service"
+      port: 11434
+
+rabbitmq:
+  enabled: false
+  # fullnameOverride: {{ printf "%s-rabbitmq" .Release.Name }}
+  auth:
+    username: "user"
+    # To use an existing secret for the password:
+    # existingPasswordSecret: "my-rabbitmq-password-secret" # Name of your K8s Secret
+    # existingPasswordSecretKey: "rabbitmq-password"       # Key in the Secret that holds the password
+    # If existingPasswordSecret is not set, the password below will be used.
+    # The Bitnami chart will typically create its own secret if password is provided directly.
+    password: "password" # Default for local dev if not using existingSecret. CHANGE FOR PRODUCTION.
   persistence:
-    enabled: false # For local dev, true for production
-    # size: 5Gi
-  # service:
-  #   port: 5672
-  #   managementPort: 15672
-  #   name: rabbitmq # This might be overridden by fullnameOverride or release name.
-                  # The RABBITMQ_HOST below uses {{ .Release.Name }}-rabbitmq for predictability.
+    enabled: false
 
-
-# --- Common Application Settings (can be expanded) ---
+# --- Common Application Settings ---
 commonConfig:
   ENVIRONMENT_NAME: "development"
 
@@ -204,6 +152,3 @@ serviceAccount:
 
 podSecurityContext: {}
 securityContext: {}
-# ingress:
-#   enabled: false
-#   ... (rest of ingress config as before) ...

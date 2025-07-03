@@ -237,7 +237,97 @@ groups:
 *   **QdrantUnavailable (from RAG Service Health Check)**:
     *   `rag_service_component_health{job="rag-query-service", component="qdrant_accessible", status="degraded"} == 1` (assuming health check exposes metrics like this)
 
-These examples need to be adapted based on actual deployed metric names, labels, and desired thresholds.
+These examples would need to be refined with actual deployed metric names, labels, and desired thresholds.
+
+**Example Grafana Dashboard Panel JSON (Conceptual for RAG Query Service P99 Latency):**
+
+This is a simplified JSON structure for a single Grafana time series panel. Actual JSON can be much more complex and is usually generated via the Grafana UI.
+
+```json
+{
+  "title": "RAG Query Service - P99 Latency (/query)",
+  "type": "timeseries",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "your_prometheus_datasource_uid" // Replace with your Prometheus datasource UID in Grafana
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "histogram_quantile(0.99, sum(rate(fastapi_request_duration_seconds_bucket{job=\"rag-query-service\", path=\"/query\"}[5m])) by (le, job, instance))",
+      "legendFormat": "{{instance}} P99 Latency",
+      "interval": ""
+    }
+  ],
+  "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+  "fieldConfig": {
+    "defaults": {
+      "color": { "mode": "palette-classic" },
+      "custom": { "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "Latency (s)", "axisPlacement": "auto", "barAlignment": 0, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "hideFrom": { "legend": false, "tooltip": false, "viz": false }, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5, "scaleDistribution": { "type": "linear" }, "showPoints": "auto", "spanNulls": false, "stacking": { "group": "A", "mode": "none" }, "thresholdsStyle": { "mode": "off" } },
+      "mappings": [],
+      "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 80 }] },
+      "unit": "s" // Seconds
+    },
+    "overrides": []
+  },
+  "options": { "legend": { "calcs": [], "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single", "sort": "none" } }
+}
+```
+
+**Example Alertmanager Configuration Structure (`alertmanager.yml` snippet):**
+
+This shows how alert rules (defined in Prometheus) are routed through Alertmanager to receivers.
+
+```yaml
+# alertmanager.yml (partial example)
+route:
+  group_by: ['alertname', 'service', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+  receiver: 'default-receiver' # Default receiver if no specific route matches
+
+  routes:
+  - receiver: 'critical-alerts-pagerduty'
+    matchers:
+      - severity="critical"
+    continue: false # Stop routing if this matches
+
+  - receiver: 'warning-alerts-slack'
+    matchers:
+      - severity="warning"
+    continue: false
+
+receivers:
+- name: 'default-receiver'
+  # Placeholder, e.g., log to a file or a dead-end for unrouted alerts
+  webhook_configs:
+  - url: 'http://localhost:9099/dev/null' # Example no-op
+
+- name: 'critical-alerts-pagerduty'
+  pagerduty_configs:
+  - service_key: "YOUR_PAGERDUTY_INTEGRATION_KEY_HERE"
+    # Details like client, client_url, description can be templated from alert labels/annotations
+
+- name: 'warning-alerts-slack'
+  slack_configs:
+  - api_url: "YOUR_SLACK_WEBHOOK_URL_HERE"
+    channel: '#alerts-team-rag'
+    send_resolved: true
+    # title, text, etc. can be templated from alert labels/annotations
+    # title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.alertname }} - {{ .CommonLabels.service }}'
+    # text: '{{ range .Alerts }}*Summary:* {{ .Annotations.summary }}\n*Description:* {{ .Annotations.description }}\n*Runbook:* {{ .Annotations.runbook_url }}\n{{ end }}'
+
+# Note: Prometheus itself needs to be configured with the Alertmanager's address
+# and the rule files (containing the 'groups:' with alert definitions like RAGQueryServiceHighP99Latency).
+# Example in prometheus.yml:
+# rule_files:
+#   - "/etc/prometheus/rules/*.rules.yml" # Path to your alert rule files
+# alerting:
+#   alertmanagers:
+#   - static_configs:
+#     - targets: ['alertmanager:9093'] # Address of Alertmanager
+```
     *   **Measurement**: SLOs would be measured using metrics collected by Prometheus.
 
 *   **Error Budget**:

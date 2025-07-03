@@ -69,13 +69,16 @@ This section will list common environment variables. As services are developed o
 *   **RabbitMQ**:
     *   `RABBITMQ_HOST`: Hostname of the RabbitMQ server (e.g., `localhost` or `rabbitmq-service` in K8s).
     *   `RABBITMQ_PORT`: Port for AMQP protocol (default: `5672`).
-    *   `RABBITMQ_USER`: Username for RabbitMQ connection (e.g., `user`).
-    *   `RABBITMQ_PASSWORD`: Password for RabbitMQ connection (e.g., `password`, use Secrets for production).
+    *   `RABBITMQ_USER`: Username for RabbitMQ connection. (Default: `user` if deployed via Helm subchart with default values).
+    *   `RABBITMQ_PASSWORD`: Password for RabbitMQ connection.
+        *   **Source**: If deploying RabbitMQ via the Helm subchart (`rabbitmq.enabled: true`), this is managed by the subchart's values (`rabbitmq.auth.password` or `rabbitmq.auth.existingPasswordSecret`). The application (e.g., example producer/consumer) would need this password.
+        *   **Note**: For production, ensure this is a strong password managed via Kubernetes Secrets.
     *   `RABBITMQ_MANAGEMENT_PORT`: Port for RabbitMQ Management UI (default: `15672`), if applicable for accessing UI.
 *   **Redis (Caching)**:
-    *   `REDIS_HOST`: Hostname of the Redis server (e.g., `localhost` or `redis-service` in K8s).
+    *   `REDIS_HOST`: Hostname of the Redis server (e.g., `localhost` or `redis-service` / `{{ .Release.Name }}-redis-master` in K8s).
     *   `REDIS_PORT`: Port for Redis server (default: `6379`).
     *   `REDIS_PASSWORD`: (Optional) Password for Redis connection if authentication is enabled.
+        *   **Source**: If deploying Redis via the Helm subchart (`redis.enabled: true`) with `redis.auth.enabled: true`, this is managed by the subchart's values (`redis.auth.password` or `redis.auth.existingSecret`). The RAG Query Service would need this password for its `RedisCacheManager`.
     *   `REDIS_DB_RAG_CACHE`: Redis database number to use for RAG query service caching (default: `1`).
     *   `SEARCH_RESULTS_CACHE_TTL_SECONDS`: TTL for cached search results (default: `3600` seconds / 1 hour).
     *   `LLM_ANSWER_CACHE_TTL_SECONDS`: TTL for cached LLM answers (default: `86400` seconds / 24 hours).

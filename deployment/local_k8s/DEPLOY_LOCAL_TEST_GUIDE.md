@@ -29,155 +29,88 @@ cd <your-repository-directory>
 2.  Build:
     ```bash
     export DOCKER_IMAGE_NAME="rag-system"
-    export DOCKER_IMAGE_TAG="iter12-local" # Use current iteration tag
+    export DOCKER_IMAGE_TAG="iter14-local" # Use current iteration tag
     docker build -t "${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}" .
     # For Kind, load if not using a registry:
     # kind load docker-image "${DOCKER_IMAGE_NAME}:${DOCKER_IMAGE_TAG}" --name rag-dev-cluster
     ```
     Ensure `charts/rag-system/values.yaml` reflects this image name, tag, and `pullPolicy: IfNotPresent` or `Never`.
 
-## 4. Prepare Kubernetes Secrets (Example for API Keys)
-1.  Create Secret:
+## 4. Prepare Kubernetes Secrets
+
+### 4.1. API Gateway API Keys
+1.  Create Secret (replace keys as needed):
     ```bash
     kubectl create secret generic rag-gateway-apikeys-secret \
       --from-literal=api-keys-csv="secretkey1,supersecretkey2" --namespace default
     ```
-2.  Configure `charts/rag-system/values.yaml`:
+2.  Configure `charts/rag-system/values.yaml` to use this existing secret:
     ```yaml
     internalApiGateway:
       apiKeys:
         existingSecret:
           name: "rag-gateway-apikeys-secret"
           keyName: "api-keys-csv"
-        createSecret: false
+        createSecret: false # Ensure this is false if using an existing secret
+    ```
+
+### 4.2. (Optional) RabbitMQ Password Secret
+If you enable RabbitMQ as a subchart (`rabbitmq.enabled: true` in `values.yaml`) AND enable its authentication (`rabbitmq.auth.enabled: true` - note: default in our values is `username: "user"`, `password: "password"` which Bitnami chart might use to create its own secret), you might want to use an existing secret for the password:
+1.  Create the secret:
+    ```bash
+    kubectl create secret generic my-rabbitmq-password-secret \
+      --from-literal=rabbitmq-password="yourStrongRabbitPassword" --namespace default
+    ```
+2.  Configure `charts/rag-system/values.yaml`:
+    ```yaml
+    rabbitmq:
+      enabled: true # If deploying RabbitMQ via this chart
+      auth:
+        username: "user" # Or your desired username
+        # password: "" # Comment out or leave empty if using existingPasswordSecret
+        existingPasswordSecret: "my-rabbitmq-password-secret"
+        # existingPasswordSecretKey: "rabbitmq-password" # Default key by Bitnami chart is often 'rabbitmq-password'
+    ```
+
+### 4.3. (Optional) Redis Password Secret
+If you enable Redis as a subchart (`redis.enabled: true`) AND enable its authentication (`redis.auth.enabled: true` in `values.yaml`), you can use an existing secret:
+1.  Create the secret:
+    ```bash
+    kubectl create secret generic my-redis-password-secret \
+      --from-literal=redis-password="yourStrongRedisPassword" --namespace default
+    ```
+2.  Configure `charts/rag-system/values.yaml`:
+    ```yaml
+    redis:
+      enabled: true # If deploying Redis via this chart
+      auth:
+        enabled: true
+        # password: "" # Comment out or leave empty
+        existingSecret: "my-redis-password-secret"
+        existingSecretPasswordKey: "redis-password" # Common key for Bitnami Redis chart
     ```
 
 ## 5. Deploy External Dependencies
-
-This section outlines deploying dependencies. You can choose to deploy them manually using `kubectl apply` or, where available, enable them as subcharts in the `rag-system` Helm chart.
-
-### 5.1. Qdrant
-*   **Option A (Manual `kubectl apply`)**: If `qdrant.enabled: false` in Helm values.
-    ```bash
-    kubectl apply -f deployment/local_k8s/dependencies/qdrant-deployment.yaml
-    kubectl apply -f deployment/local_k8s/dependencies/qdrant-service.yaml
-    ```
-*   **Option B (Helm Subchart)**: If `qdrant.enabled: true` in Helm values.
-    Run `helm dependency update ./charts/rag-system` first. Helm will deploy Qdrant.
-
-### 5.2. Ollama
-**IMPORTANT**: The `rag-system` Helm chart **does not deploy Ollama itself**. You must deploy Ollama separately.
-1.  **Deploy Ollama Manually**:
-    ```bash
-    kubectl apply -f deployment/local_k8s/dependencies/ollama-statefulset.yaml
-    kubectl apply -f deployment/local_k8s/dependencies/ollama-service.yaml
-    ```
-2.  **Wait for Ollama to be ready**: `kubectl get statefulset ollama -w && kubectl get pods -l app=ollama -w`
-3.  **Pull a model into Ollama**:
-    ```bash
-    OLLAMA_POD=$(kubectl get pods -l app=ollama -o jsonpath='{.items[0].metadata.name}')
-    kubectl exec -it $OLLAMA_POD -- ollama pull llama2 # Or your desired model
-    ```
-4.  **Configure `charts/rag-system/values.yaml` for your Ollama service**:
-    Ensure the `ollama.service.name` (e.g., "ollama-service") and `ollama.service.port` (e.g., 11434) in `values.yaml` match your Ollama Kubernetes service details. The RAG Query Service uses these values to connect.
-
-### 5.3. RabbitMQ
-*   **Option A (Manual `kubectl apply`)**: If `rabbitmq.enabled: false` in Helm values.
-    ```bash
-    kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-deployment.yaml
-    kubectl apply -f deployment/local_k8s/dependencies/rabbitmq-service.yaml
-    ```
-*   **Option B (Helm Subchart)**: If `rabbitmq.enabled: true` in Helm values.
-    Run `helm dependency update ./charts/rag-system` first. Helm will deploy RabbitMQ. Configure credentials in `values.yaml` under `rabbitmq.auth`.
-
-### 5.4. Redis
-*   **Option A (Manual `kubectl apply`)**: If `redis.enabled: false` in Helm values.
-    ```bash
-    kubectl apply -f deployment/local_k8s/dependencies/redis-deployment.yaml
-    kubectl apply -f deployment/local_k8s/dependencies/redis-service.yaml
-    ```
-*   **Option B (Helm Subchart)**: If `redis.enabled: true` in Helm values.
-    Run `helm dependency update ./charts/rag-system` first. Helm will deploy Redis.
-
-Wait for all chosen dependencies to be ready before proceeding.
+(As described in previous versions - deploy Qdrant, Ollama manually if their subcharts are not enabled. RabbitMQ & Redis covered by Helm options above if enabled.)
+Ensure `helm dependency update ./charts/rag-system` or `helm dependency build ./charts/rag-system` is run if you enable subcharts.
 
 ## 6. Deploy Application Services using Helm Chart
-1.  Navigate to repository root.
-2.  Ensure `charts/rag-system/values.yaml` is configured (image, secrets, dependency URLs if external and subcharts disabled).
-3.  Install/Upgrade:
-    ```bash
-    helm install my-rag-instance ./charts/rag-system -f ./charts/rag-system/values.yaml --namespace default
-    # Or: helm upgrade ...
-    ```
+(As before - `helm install ...`)
 
 ## 7. Verify Deployment
-```bash
-kubectl get all -l app.kubernetes.io/instance=my-rag-instance -n default -w
-# Check logs...
-```
+(As before - `kubectl get all ...`, check logs)
 
 ## 8. Access the API Gateway
-(Determine `$GATEWAY_URL` via NodePort and Minikube IP/localhost)
-```bash
-# Example for Docker Desktop/Kind:
-# NODE_PORT_GATEWAY=$(kubectl get service my-rag-instance-internal-api-gateway -n default -o jsonpath='{.spec.ports[0].nodePort}')
-# export GATEWAY_URL="http://localhost:$NODE_PORT_GATEWAY"
-# echo "Gateway URL: $GATEWAY_URL"
-```
+(As before - determine `$GATEWAY_URL`)
 
 ## 9. Smoke Test Plan & Execution
-```bash
-export MY_API_KEY="secretkey1"
-# Ensure GATEWAY_URL is set
-```
-### 9.1. Gateway Health Check
-`curl $GATEWAY_URL/gateway_health`
-### 9.2. RAG Query Service Health
-`curl -H "X-API-Key: $MY_API_KEY" $GATEWAY_URL/rag/health`
-### 9.3. Document Processing Service Health
-`curl -H "X-API-Key: $MY_API_KEY" $GATEWAY_URL/document/health`
+(As before - using `$MY_API_KEY` and `$GATEWAY_URL`)
 
-### 9.4. Test Document Processing (TXT, PDF, DOCX, PPTX, XLSX)
-1.  Create `testdoc.txt`: `echo "Text processing by Jules is fine." > testdoc.txt`
-2.  Create `testdoc.pdf` (content: "PDF processing by Jules is good.")
-3.  Create `testdoc.docx` (content: "DOCX processing by Jules is also good.")
-4.  Create `testdoc.pptx` (content on a slide: "PPTX processing by Jules works.")
-5.  Create `testdoc.xlsx` (cell A1: "XLSX processing by Jules is okay.", cell B1: "Excel figures are important.")
-
-    ```bash
-    curl -X POST "$GATEWAY_URL/document/process_document" -H "X-API-Key: $MY_API_KEY" -F "file=@testdoc.txt" -F "metadata_json={\"source\":\"e2e_txt_v12\"}"
-    curl -X POST "$GATEWAY_URL/document/process_document" -H "X-API-Key: $MY_API_KEY" -F "file=@testdoc.pdf" -F "metadata_json={\"source\":\"e2e_pdf_v12\"}"
-    curl -X POST "$GATEWAY_URL/document/process_document" -H "X-API-Key: $MY_API_KEY" -F "file=@testdoc.docx" -F "metadata_json={\"source\":\"e2e_docx_v12\"}"
-    curl -X POST "$GATEWAY_URL/document/process_document" -H "X-API-Key: $MY_API_KEY" -F "file=@testdoc.pptx" -F "metadata_json={\"source\":\"e2e_pptx_v12\"}"
-    curl -X POST "$GATEWAY_URL/document/process_document" -H "X-API-Key: $MY_API_KEY" -F "file=@testdoc.xlsx" -F "metadata_json={\"source\":\"e2e_xlsx_v12\"}"
-    ```
-    Check `doc-processing-service` logs.
-
-### 9.5. Test RAG Query Service (Querying Processed Documents)
-Wait a few seconds for indexing.
-```bash
-curl -X POST "$GATEWAY_URL/rag/query" -H "Content-Type: application/json" -H "X-API-Key: $MY_API_KEY" \
-  -d '{"query": "status of text processing by Jules", "top_k": 1, "generate_answer": true}'
-curl -X POST "$GATEWAY_URL/rag/query" -H "Content-Type: application/json" -H "X-API-Key: $MY_API_KEY" \
-  -d '{"query": "status of PDF processing by Jules", "top_k": 1, "generate_answer": true}'
-curl -X POST "$GATEWAY_URL/rag/query" -H "Content-Type: application/json" -H "X-API-Key: $MY_API_KEY" \
-  -d '{"query": "status of DOCX processing by Jules", "top_k": 1, "generate_answer": true}'
-curl -X POST "$GATEWAY_URL/rag/query" -H "Content-Type: application/json" -H "X-API-Key: $MY_API_KEY" \
-  -d '{"query": "status of PPTX processing by Jules", "top_k": 1, "generate_answer": true}'
-curl -X POST "$GATEWAY_URL/rag/query" -H "Content-Type: application/json" -H "X-API-Key: $MY_API_KEY" \
-  -d '{"query": "status of XLSX processing by Jules", "top_k": 1, "generate_answer": true}'
-```
-Observe responses.
-
-### 9.6. Check RAG Query Service Metrics (Conceptual)
-(Port-forward RAG service and curl `/metrics`)
-
-### 9.7. Test RabbitMQ Producer/Consumer Examples (Manual - if deployed)
-(As before)
+### 9.1 - 9.7 (Smoke tests for Gateway, RAG Query, Doc Proc, Metrics, RabbitMQ examples remain the same as Iteration 12/13)
 
 ## 10. Troubleshooting
 (As before)
 ## 11. Cleanup
-(As before)
+(As before - remember to delete manually created secrets if not managed by Helm: `kubectl delete secret my-rabbitmq-password-secret my-redis-password-secret`)
 ## 12. Running Automated Tests Locally
 (As before)

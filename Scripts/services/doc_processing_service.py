@@ -17,7 +17,11 @@ import io # For reading file stream
 
 # Configure logging
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# BasicConfig should ideally be called only once at application entry point.
+# Assuming it's called here if service is run standalone, or by main app otherwise.
+# logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 # Import config loader
 try:
@@ -41,6 +45,10 @@ QDRANT_API_KEY = get_config_value("QDRANT_API_KEY", yaml_path="vector_store.qdra
 EMBEDDING_MODEL_NAME = get_config_value("EMBEDDING_MODEL_NAME", yaml_path="model.embedding_model", default="all-MiniLM-L6-v2")
 MODEL_DEVICE = get_config_value("MODEL_DEVICE", yaml_path="model.device", default="cpu")
 
+# Chunking Configuration
+CHUNK_SIZE = int(get_config_value("CHUNK_SIZE", yaml_path="document_processing.chunk_size", default=1000))
+CHUNK_OVERLAP = int(get_config_value("CHUNK_OVERLAP", yaml_path="document_processing.chunk_overlap", default=200))
+
 
 # --- Global Variables ---
 app = FastAPI(title="Document Processing Service")
@@ -52,8 +60,9 @@ embedding_model: Optional[SentenceTransformer] = None
 class ProcessingResponse(BaseModel):
     message: str
     filename: Optional[str] = None
-    qdrant_id: Optional[Union[str, int]] = None # ID used in Qdrant
-    metadata_processed: Optional[Dict[str, Any]] = None
+    parent_document_id: Optional[Union[str, uuid.UUID]] = None # ID of the parent document
+    chunks_indexed: int = 0
+    metadata_processed: Optional[Dict[str, Any]] = None # Metadata of the parent document
     status: str
 
 
@@ -253,25 +262,79 @@ async def process_document_endpoint(
             logger.error("Cannot process document: Qdrant client or embedding model not initialized.")
             raise HTTPException(status_code=503, detail="Service not ready to process and index documents.")
         try:
-            logger.info("Generating embedding for the document content...")
-            # For simplicity, embedding the whole text. Chunking would be done here in a real scenario.
-            embedding = embedding_model.encode(text_to_embed, convert_to_tensor=False).tolist()
-            logger.info(f"Embedding generated. Vector dimension: {len(embedding)}")
+            # 1. Generate parent document ID and basic keywords/TFs from full text
+            parent_doc_id = parsed_metadata.get("document_id") or str(uuid.uuid4())
+            full_text_keywords = []
+            full_text_term_frequencies = {}
 
-            # Prepare payload for Qdrant
-            if not isinstance(parsed_metadata, dict): # Ensure metadata is a dict
+            try:
+                import re
+                full_text_words = re.findall(r'\b\w+\b', text_to_embed.lower())
+                stop_words = set(["the", "a", "is", "in", "it", "to", "of", "and", "for", "on", "with", "this", "that", "an", "by", "as", "at", "or", "if", "not", "be"]) # Basic list
+                full_text_keywords = list(set(word for word in full_text_words if word not in stop_words and len(word) > 2 and not word.isdigit()))[:150]
+                full_text_term_frequencies = {kw: full_text_words.count(kw) for kw in full_text_keywords}
+                logger.info(f"Generated {len(full_text_keywords)} keywords and TFs for parent doc {parent_doc_id}.")
+            except Exception as kw_e:
+                logger.warning(f"Could not generate keywords/TFs for parent doc {parent_doc_id}: {kw_e}")
+
+            # Store these parent-level keywords and TFs in the base metadata
+            # Ensure metadata is a dict
+            if not isinstance(parsed_metadata, dict):
                 logger.warning(f"Parsed metadata is not a dictionary: {parsed_metadata}. Resetting to empty dict.")
                 parsed_metadata = {}
 
-            payload_for_qdrant = {"text": text_to_embed, "metadata": parsed_metadata.copy()}
-
+            parent_metadata = parsed_metadata.copy()
+            parent_metadata["_internal_id"] = parent_doc_id # This is the ID for the overall document
+            parent_metadata["keywords"] = full_text_keywords
+            parent_metadata["term_frequencies"] = full_text_term_frequencies
             if filename:
-                payload_for_qdrant["metadata"]["original_filename"] = filename
-                if "source" not in payload_for_qdrant["metadata"]:
-                     payload_for_qdrant["metadata"]["source"] = filename # Default source to filename if not specified
+                parent_metadata["original_filename"] = filename
+                if "source" not in parent_metadata:
+                    parent_metadata["source"] = filename
 
-            doc_id_for_qdrant = parsed_metadata.get("document_id") or str(uuid.uuid4())
-            payload_for_qdrant["metadata"]["_internal_id"] = doc_id_for_qdrant
+
+            # 2. Chunk the document text
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=CHUNK_SIZE,
+                chunk_overlap=CHUNK_OVERLAP,
+                length_function=len,
+                is_separator_regex=False,
+            )
+            chunks = text_splitter.split_text(text_to_embed)
+            logger.info(f"Split document {parent_doc_id} into {len(chunks)} chunks (size: {CHUNK_SIZE}, overlap: {CHUNK_OVERLAP}).")
+
+            if not chunks:
+                logger.warning(f"No chunks generated for document {parent_doc_id}. Text might be too short or empty.")
+                return ProcessingResponse(
+                    message="Document processed, but no text chunks were generated (text might be too short). Metadata logged.",
+                    filename=filename,
+                    parent_document_id=parent_doc_id,
+                    chunks_indexed=0,
+                    metadata_processed=parent_metadata,
+                    status="processed_no_chunks"
+                )
+
+            points_to_upsert = []
+            for i, chunk_text in enumerate(chunks):
+                chunk_id = f"{parent_doc_id}_chunk_{i}"
+                logger.debug(f"Generating embedding for chunk {i} of document {parent_doc_id}...")
+                embedding = embedding_model.encode(chunk_text, convert_to_tensor=False).tolist()
+
+                # Each chunk point stores its own text, and references parent metadata
+                chunk_payload = {
+                    "chunk_text": chunk_text,
+                    "parent_document_id": parent_doc_id,
+                    "chunk_sequence_number": i,
+                    "metadata": parent_metadata # Parent's full metadata including keywords, TFs, source etc.
+                }
+
+                points_to_upsert.append(qdrant_models.PointStruct(
+                    id=chunk_id,
+                    vector=embedding,
+                    payload=chunk_payload
+                ))
+
+            logger.info(f"Generated {len(points_to_upsert)} points for upsertion for parent document {parent_doc_id}.")
 
             # Generate basic keywords
             try:
@@ -299,28 +362,22 @@ async def process_document_endpoint(
                 payload_for_qdrant["metadata"]["keywords"] = []
                 payload_for_qdrant["metadata"]["term_frequencies"] = {}
 
-            points_to_upsert = [
-                qdrant_models.PointStruct(
-                    id=doc_id_for_qdrant,
-                    vector=embedding,
-                    payload=payload_for_qdrant
+            # Upsert all chunk points to Qdrant in batches if necessary (though Qdrant client handles batching)
+            if points_to_upsert:
+                qdrant_client.upsert(
+                    collection_name=QDRANT_COLLECTION_NAME,
+                    points=points_to_upsert,
+                    wait=True
                 )
-            ]
-
-            logger.info(f"Upserting document to Qdrant collection '{QDRANT_COLLECTION_NAME}' with ID: {doc_id_for_qdrant}")
-            qdrant_client.upsert(
-                collection_name=QDRANT_COLLECTION_NAME,
-                points=points_to_upsert,
-                wait=True
-            )
-            logger.info(f"Document '{doc_id_for_qdrant}' successfully indexed into Qdrant.")
+                logger.info(f"{len(points_to_upsert)} chunks for document '{parent_doc_id}' successfully indexed into Qdrant.")
 
             return ProcessingResponse(
-                message="Document processed and indexed successfully.",
+                message=f"Document processed. {len(chunks)} chunks indexed.",
                 filename=filename,
-                qdrant_id=doc_id_for_qdrant,
-                metadata_processed=payload_for_qdrant["metadata"],
-                status="indexed"
+                parent_document_id=parent_doc_id,
+                chunks_indexed=len(chunks),
+                metadata_processed=parent_metadata, # Return the parent metadata
+                status="indexed_chunked"
             )
 
         except Exception as e:

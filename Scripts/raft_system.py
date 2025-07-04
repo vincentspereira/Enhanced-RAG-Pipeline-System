@@ -462,6 +462,165 @@ class RAFTSystem:
         # self.model_registry.register_model(model_version) # This was for embedding models, need similar for LLMs
         return model_version # Placeholder return
 
+
+    async def execute_raft_cycle(self, query: str, domain: Optional[str] = None, search_system: Optional[Any] = None) -> Dict[str, Optional[str]]: # search_system is AdvancedSearchSystem
+        """
+        Executes a single RAFT cycle: Retrieve, Augment, Fine-tune, Generate.
+        Returns a dictionary with 'model_path' and 'response'.
+        """
+        if self.sandbox_test_mode:
+            logger.info("[Sandbox Mode] execute_raft_cycle is conceptual only.")
+            return {"model_path": "sandbox_dummy_model_path", "response": f"Sandbox dummy response to: {query}"}
+
+        self._ensure_libs_loaded()
+        if not hasattr(self, 'LLMService_class') or not hasattr(self, 'HuggingFaceLLM_class'):
+             logger.error("LLMService or HuggingFaceLLM class not available. Aborting RAFT cycle.")
+             return {"model_path": None, "response": "Error: Core LLM classes not loaded."}
+
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        logger.info(f"RAFT Cycle {timestamp} initiated for query: '{query}' in domain: '{domain}'")
+
+        base_model_for_finetuning = self._intelligent_route_model(query, domain) # Determine upfront for tracking
+        finetuned_model_details = None # Path or name of the fine-tuned model if successful
+
+        # 1. Retrieve
+        retrieved_docs: List[Any] = []
+        if search_system is None:
+            logger.warning("RAFT Cycle: No search_system provided. Using placeholder retrieval.")
+            _placeholder_docs = self.retrieve_documents(query, domain, top_k=5)
+            retrieved_docs = [{"id": f"placeholder_{i}", "content": d.get("text"), "score": 1.0, "source_type": "placeholder"} for i,d in enumerate(_placeholder_docs)]
+        else:
+            try:
+                retrieved_docs = await search_system.search(query, top_k=5, use_reranker=True) # Use reranker
+                logger.info(f"RAFT Cycle: Retrieved {len(retrieved_docs)} documents via AdvancedSearchSystem.")
+            except Exception as e:
+                logger.error(f"RAFT Cycle: Error during document retrieval: {e}", exc_info=True)
+
+        if not retrieved_docs:
+            logger.warning(f"RAFT Cycle: No documents retrieved for query '{query}'. Generating with existing model.")
+            self._track_raft_experiment(timestamp, query, domain, base_model_for_finetuning, None, "skipped_finetuning_no_docs", "No docs retrieved")
+            return await self._generate_with_existing_model(query, domain, retrieved_docs) # Make helper async
+
+        # 2. Augment Data
+        generated_training_examples = []
+        augmentation_llm_name = self.config.get("data_augmentation_llm", self.config.get("default_base_llm", DEFAULT_BASE_LLM))
+        augmentation_llm = self.global_llm_registry.get_model(augmentation_llm_name)
+
+        if not augmentation_llm:
+            logger.error(f"RAFT Cycle: Data augmentation LLM '{augmentation_llm_name}' not found. Falling back to simple text concatenation.")
+            augmented_data_text = "\n\n".join([doc.content for doc in retrieved_docs if doc.content and doc.content.strip()])
+        else:
+            logger.info(f"RAFT Cycle: Using LLM '{augmentation_llm_name}' for data augmentation.")
+            for i, doc_chunk in enumerate(retrieved_docs):
+                if not doc_chunk.content or not doc_chunk.content.strip(): continue
+
+                prompt_for_augmentation = f"Context: {doc_chunk.content}\n\nBased *only* on the context above, answer the following question concisely: {query}\n\nAnswer:"
+                try:
+                    generated_response = augmentation_llm.generate(prompt_for_augmentation, max_length=150)
+                    if generated_response and generated_response.strip():
+                        training_example_text = f"Context: {doc_chunk.content}\nQuestion: {query}\nAnswer: {generated_response.strip()}"
+                        generated_training_examples.append(training_example_text)
+                    else:
+                        logger.warning(f"RAFT Cycle: Augmentation LLM produced empty response for chunk {i}. Using raw chunk.")
+                        generated_training_examples.append(doc_chunk.content)
+                except Exception as e_aug:
+                    logger.error(f"RAFT Cycle: Error during LLM-based data augmentation for chunk {i}: {e_aug}", exc_info=True)
+                    generated_training_examples.append(doc_chunk.content) # Fallback to raw content
+
+        augmented_data_text = "\n\n".join(generated_training_examples)
+
+        if not augmented_data_text.strip():
+            logger.warning(f"RAFT Cycle: No usable content after augmentation for query '{query}'. Generating with existing model.")
+            self._track_raft_experiment(timestamp, query, domain, base_model_for_finetuning, None, "skipped_finetuning_no_aug_data", "No data after augmentation")
+            return await self._generate_with_existing_model(query, domain, retrieved_docs)
+
+        # 3. Fine-tune
+        temp_dataset_path = None
+        generation_llm_name = base_model_for_finetuning # Default to base if FT fails
+
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt", encoding="utf-8") as tmp_file:
+                tmp_file.write(augmented_data_text)
+                temp_dataset_path = tmp_file.name
+            logger.info(f"RAFT Cycle: Augmented dataset for fine-tuning saved to {temp_dataset_path}")
+
+            finetuned_model_name_prefix = f"{domain}_raft_{timestamp}" if domain else f"general_raft_{timestamp}"
+
+            logger.info(f"RAFT Cycle: Starting fine-tuning of '{base_model_for_finetuning}' to create '{finetuned_model_name_prefix}-variant'.")
+
+            model_version_obj = self.fine_tune_llm_on_custom_data(
+                dataset_path=temp_dataset_path,
+                model_name=finetuned_model_name_prefix,
+                base_model_name_or_path=base_model_for_finetuning,
+                training_args_override={"report_to": "wandb" if self.use_wandb else "none"} # Pass W&B config
+            )
+            finetuned_model_details = model_version_obj.path if hasattr(model_version_obj, 'path') else finetuned_model_name_prefix
+            generation_llm_name = finetuned_model_name_prefix
+            logger.info(f"RAFT Cycle: Fine-tuning complete. New model path/name: {finetuned_model_details}")
+
+        except Exception as e_ft:
+            logger.error(f"RAFT Cycle: Error during fine-tuning for query '{query}': {e_ft}", exc_info=True)
+            finetuned_model_details = f"failed_ft_fallback_to_{generation_llm_name}" # Stays as base_model_for_finetuning
+        finally:
+            if temp_dataset_path and os.path.exists(temp_dataset_path):
+                os.remove(temp_dataset_path)
+                logger.debug(f"RAFT Cycle: Cleaned up temporary dataset {temp_dataset_path}")
+
+        # 4. Generate
+        generation_llm = self.global_llm_registry.get_model(generation_llm_name)
+        if not generation_llm: # Should not happen if fine_tune_llm_on_custom_data registers correctly or fallback works
+            logger.critical(f"RAFT Cycle: CRITICAL - Could not load LLM '{generation_llm_name}' for generation.")
+            self._track_raft_experiment(timestamp, query, domain, base_model_for_finetuning, finetuned_model_details, "failed", "LLM loading critical failure")
+            return {"model_path": finetuned_model_details, "response": "Error: Critical LLM loading failure."}
+
+        rag_context = "\n".join([doc.content for doc in retrieved_docs if doc.content])
+        prompt = f"Based on the following context:\n{rag_context}\n\nAnswer the question: {query}"
+
+        logger.info(f"RAFT Cycle: Generating response using model '{generation_llm_name}'.")
+        response = generation_llm.generate(prompt)
+
+        self._track_raft_experiment(timestamp, query, domain, base_model_for_finetuning, finetuned_model_details, "success", response)
+        logger.info(f"RAFT Cycle for query '{query}' complete. Response generated with model '{generation_llm_name}'.")
+        return {"model_path": finetuned_model_details, "response": response}
+
+    async def _generate_with_existing_model(self, query: str, domain: Optional[str], retrieved_docs: List[Any]) -> Dict[str, str]:
+        """Helper to generate response using an existing model when fine-tuning is skipped."""
+        generation_llm_name = self._intelligent_route_model(query, domain)
+        if not self.global_llm_registry.get_model(generation_llm_name): # Check if model key exists
+            logger.error(f"Intelligent routing selected non-existent model: {generation_llm_name}. Falling back.")
+            generation_llm_name = self.config.get("default_base_llm", DEFAULT_BASE_LLM)
+
+        generation_llm = self.global_llm_registry.get_model(generation_llm_name) # Get the actual model object
+        if not generation_llm:
+            logger.error(f"Could not load LLM instance for {generation_llm_name}. Aborting.")
+            return {"model_path": f"error_model_not_found:{generation_llm_name}", "response": "Error: Could not load LLM for generation."}
+
+        rag_context = "\n".join([doc.content for doc in retrieved_docs if doc.content])
+        prompt = f"Based on the following context (if any):\n{rag_context}\n\nAnswer the question: {query}"
+        response = generation_llm.generate(prompt)
+        logger.info(f"RAFT Cycle (skipped fine-tuning): Used existing model '{generation_llm_name}' for generation.")
+        return {"model_path": f"existing_model:{generation_llm_name}", "response": response}
+
+    def _track_raft_experiment(self, timestamp:str, query:str, domain:Optional[str], base_model:str, ft_model_details:Optional[str], status:str, response_or_error:str):
+        """Helper to track RAFT experiment details."""
+        # Ensure all potentially referenced variables are defined or have defaults
+        params = {
+            "query": query,
+            "domain": domain,
+            "base_model_for_finetuning": base_model if base_model else 'N/A',
+            "finetuned_model_details": ft_model_details if ft_model_details else 'N/A'
+        }
+        metrics = {
+            "status": status,
+            "response_length": len(response_or_error) if status == "success" else 0,
+            "outcome_message": response_or_error if status != "success" else "N/A"
+        }
+        self.track_experiment(
+            experiment_name=f"raft_cycle_{domain or 'general'}_{timestamp}",
+            params=params,
+            metrics=metrics
+        )
+
     def fine_tune_embedding_model_on_custom_data(
         self,
         texts: List[str], # List of texts for unsupervised fine-tuning

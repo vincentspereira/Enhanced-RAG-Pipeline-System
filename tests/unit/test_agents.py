@@ -142,6 +142,82 @@ class TestSpecialistAgent(unittest.IsolatedAsyncioTestCase):
         self.assertIn("result", call_args['content'])
 
 
+class TestNewAgentTypes(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.network_mock = MagicMock(spec=AgentNetwork)
+        # Define an async mock for send_message_to_agent for the network_mock
+        self.network_mock.send_message_to_agent = AsyncMock()
+
+
+    def test_research_agent_creation(self):
+        agent = SpecialistAgent(expertise="research", network=self.network_mock, agent_name="TestResearchAgent") # Using SpecialistAgent directly as ResearchAgent is a subclass
+        self.assertIn("execute_task:research", agent.capabilities)
+        self.assertEqual(agent.agent_name, "TestResearchAgent")
+
+    def test_creative_agent_creation(self):
+        agent = SpecialistAgent(expertise="creative_writing", network=self.network_mock)
+        self.assertIn("execute_task:creative_writing", agent.capabilities)
+        self.assertEqual(agent.agent_name, "Specialist-Creative_writing") # Default name
+
+    def test_analysis_agent_creation(self):
+        agent = SpecialistAgent(expertise="data_analysis", network=self.network_mock)
+        self.assertIn("execute_task:data_analysis", agent.capabilities)
+
+    def test_translation_agent_creation(self):
+        # TranslationAgent might have more specific init if it were more complex
+        agent = SpecialistAgent(expertise="translation", network=self.network_mock)
+        self.assertIn("execute_task:translation", agent.capabilities)
+        # If TranslationAgent had specific capabilities like `translate_text:en,es`
+        # those would be tested here. For now, it inherits from SpecialistAgent.
+
+    def test_compliance_agent_creation(self):
+        agent = SpecialistAgent(expertise="compliance_check", network=self.network_mock)
+        self.assertIn("execute_task:compliance_check", agent.capabilities)
+
+class TestBaseAgentHandlers(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.network_mock = AsyncMock(spec=AgentNetwork) # Use AsyncMock for network
+        self.agent = Agent(agent_id="handler_test_agent", network=self.network_mock)
+        # Manually register since Agent is ABC and _register_default_handlers is part of concrete usually
+        # For this test, we assume it's callable or we directly call the handler.
+        # If testing BaseAgent directly, and _handle_knowledge_share is defined, it's fine.
+        # If Agent class itself doesn't call _register_default_handlers, this test needs adjustment
+        # or we test via a concrete subclass that does call it.
+        # The current BaseAgent's __init__ does call _register_default_handlers.
+
+    async def test_handle_knowledge_share(self):
+        self.assertNotIn("test_key", self.agent.knowledge_base)
+        share_message_content = {"key": "test_key", "value": "test_value", "shared_by": "sharer_agent"}
+        share_message = Message(
+            sender_id="sharer_agent",
+            recipient_id=self.agent.agent_id,
+            message_type="KNOWLEDGE_SHARE",
+            content=share_message_content
+        )
+        await self.agent._handle_knowledge_share(share_message) # Call handler directly
+        self.assertIn("test_key", self.agent.knowledge_base)
+        self.assertEqual(self.agent.get_knowledge("test_key"), "test_value")
+
+class TestOrchestratorAgentHandlers(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.network_mock = AsyncMock(spec=AgentNetwork)
+        self.orchestrator = OrchestratorAgent(agent_id="test_orch_handler", network=self.network_mock)
+
+    async def test_handle_shared_insight(self):
+        self.assertNotIn("test_insight", self.orchestrator.strategic_insights)
+        insight_content = {"insight_key": "test_insight", "insight_value": "valuable_info", "source_agent": "learning_agent_id"}
+        insight_message = Message(
+            sender_id="learning_agent_id",
+            recipient_id=self.orchestrator.agent_id,
+            message_type="SHARED_INSIGHT",
+            content=insight_content
+        )
+        await self.orchestrator._handle_shared_insight(insight_message) # Call handler directly
+        self.assertIn("test_insight", self.orchestrator.strategic_insights)
+        self.assertEqual(self.orchestrator.strategic_insights["test_insight"], "valuable_info")
+        self.assertEqual(self.orchestrator.get_knowledge("insight_test_insight"), "valuable_info")
+
+
 if __name__ == '__main__':
     unittest.main()
 ```

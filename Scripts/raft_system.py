@@ -8,13 +8,26 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+import tempfile # Added for execute_raft_cycle
+from datetime import datetime # Added for model versioning and RAFT cycle timestamp
+
+import tempfile # Added for execute_raft_cycle
+from datetime import datetime # Added for model versioning and RAFT cycle timestamp
+
 # Conditionally import heavy libraries
 torch = None
 yaml = None
+wandb = None # Added for wandb integration
 AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments = None, None, None, None
 SentenceTransformer = None
 
-# from Scripts.models.registry import ModelRegistry, ModelVersion # Deferred
+# Dynamically import ModelVersion for type hinting if possible, actual class used will be self.ModelVersion_class
+try:
+    from Scripts.models.registry import ModelVersion
+except ImportError:
+    ModelVersion = DummyModelVersion # Fallback for type hinting if module not found early
+
+# from Scripts.models.registry import ModelRegistry # Deferred
 # Make EmbeddingTrainer and EmbeddingDataset optional for sandbox mode if they import heavy deps
 # For now, assume they are light enough or handle conditional imports internally
 # from Scripts.models.training.pipeline import EmbeddingTrainer, EmbeddingDataset # Deferred
@@ -99,22 +112,37 @@ class RAFTSystem:
         config_path: str = "config/raft_config.yaml",
         custom_finetuning_output_dir: str = "data/custom_llm_finetuned",
         embedding_finetuning_output_dir: str = "data/custom_embeddings_finetuned",
-        use_wandb: bool = False, # TODO: Integrate wandb from training pipeline
-        wandb_project: str = "raft-system"
+        use_wandb: bool = False,
+        wandb_project: str = "raft-system",
+        **kwargs # Added to accept other keyword arguments like sandbox_test_mode
     ):
         self.model_registry = ModelRegistry() # Uses the global instance for now
         self.global_llm_registry = global_llm_registry
-        self.config = self._load_config(config_path)
+        # self.config is loaded later, after sandbox_test_mode is set
         self.custom_finetuning_output_dir = custom_finetuning_output_dir
         os.makedirs(self.custom_finetuning_output_dir, exist_ok=True)
+
         self.sandbox_test_mode = kwargs.get("sandbox_test_mode", False)
+        logger.info(f"RAFTSystem initialized. Sandbox mode: {self.sandbox_test_mode}")
+
+        self.use_wandb = use_wandb
+        self.wandb_project = wandb_project
+        self.current_wandb_run = None # To store the active run object
 
         if not self.sandbox_test_mode:
-            global torch, yaml, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, SentenceTransformer
+            global torch, yaml, wandb, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, SentenceTransformer
             # Dynamically import heavy libraries only when not in sandbox mode
             import torch
             import yaml as pyyaml_module
             yaml = pyyaml_module
+            if self.use_wandb:
+                try:
+                    import wandb as wb_module
+                    wandb = wb_module
+                    logger.info("Weights & Biases library loaded.")
+                except ImportError:
+                    logger.warning("wandb library not found, but use_wandb is True. Disabling W&B.")
+                    self.use_wandb = False # Disable if not found
             from transformers import AutoModelForCausalLM as HfAutoModelForCausalLM, AutoTokenizer as HfAutoTokenizer, Trainer as HfTrainer, TrainingArguments as HfTrainingArguments
             AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments = HfAutoModelForCausalLM, HfAutoTokenizer, HfTrainer, HfTrainingArguments
             from sentence_transformers import SentenceTransformer as STrans
@@ -125,54 +153,71 @@ class RAFTSystem:
             from Scripts.llm.service import LLMService, HuggingFaceLLM, llm_registry as global_llm_registry
             from Scripts.active_learning.learner import ActiveLearner
             from Scripts.knowledge_graph.graph import KnowledgeGraph
-            from Scripts.models.registry import ModelRegistry as RealModelRegistry, ModelVersion as RealModelVersion # Alias to avoid clash
+            from Scripts.models.registry import ModelRegistry as RealModelRegistry, ModelVersion as RealModelVersion
 
             self.model_registry = RealModelRegistry()
             self.ModelVersion_class = RealModelVersion
             self.global_llm_registry = global_llm_registry
-            self.embedding_trainer = EmbeddingTrainer( # Real EmbeddingTrainer
+            self.embedding_trainer = EmbeddingTrainer(
                 output_dir=embedding_finetuning_output_dir,
                 model_registry=self.model_registry,
-                use_wandb=use_wandb,
-                wandb_project=wandb_project
+                use_wandb=self.use_wandb, # Pass the potentially updated use_wandb
+                wandb_project=self.wandb_project
             )
-            self.active_learner = ActiveLearner() # Real ActiveLearner
-            self.knowledge_graph = KnowledgeGraph() # Real KnowledgeGraph
+            self.active_learner = ActiveLearner()
+            self.knowledge_graph = KnowledgeGraph()
             LLMService_class = LLMService
             HuggingFaceLLM_class = HuggingFaceLLM
         else: # Sandbox mode
             self.model_registry = _global_dummy_model_registry
             self.ModelVersion_class = DummyModelVersion
             self.global_llm_registry = _global_dummy_llm_registry
-            self.embedding_trainer = DummyEmbeddingTrainer() # Dummy
-            self.active_learner = DummyActiveLearner() # Dummy
-            self.knowledge_graph = DummyKnowledgeGraph() # Dummy
+            self.embedding_trainer = DummyEmbeddingTrainer()
+            self.active_learner = DummyActiveLearner()
+            self.knowledge_graph = DummyKnowledgeGraph()
             LLMService_class = DummyLLMService
-            HuggingFaceLLM_class = DummyLLMService # Use DummyLLMService as placeholder for HuggingFaceLLM type
+            HuggingFaceLLM_class = DummyLLMService
             logger.info("[Sandbox Mode] Using dummy/placeholder components for RAFTSystem.")
+            self.use_wandb = False # Ensure wandb is off in sandbox
 
         self.LLMService_class = LLMService_class
         self.HuggingFaceLLM_class = HuggingFaceLLM_class
         self.config = self._load_config(config_path)
-        self._initialize_pre_tuned_models() # Uses self.HuggingFaceLLM_class if not sandbox
+        self._initialize_pre_tuned_models()
         self.model_performance_analytics = {}
-        self.experiment_tracking = {}
+        self.experiment_tracking = {} # This is the local dict, wandb is separate
+
+        if self.use_wandb and wandb: # Check wandb module itself also
+            # Initialize a default run or manage runs per operation
+            # For now, let's not start a run here, but in specific methods like execute_raft_cycle
+            logger.info(f"W&B enabled. Project: {self.wandb_project}. Run will be initialized per operation.")
+
 
     def _ensure_libs_loaded(self):
         """Ensures heavy libraries are loaded if not in sandbox mode and not already loaded."""
-        if not self.sandbox_test_mode and (torch is None or AutoModelForCausalLM is None or SentenceTransformer is None or yaml is None):
-            global torch, yaml, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, SentenceTransformer
-            import torch
-            import yaml as pyyaml_module
-            yaml = pyyaml_module
-            from transformers import AutoModelForCausalLM as HfAutoModelForCausalLM, \
-                                     AutoTokenizer as HfAutoTokenizer, \
-                                     Trainer as HfTrainer, \
-                                     TrainingArguments as HfTrainingArguments
-            AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments = HfAutoModelForCausalLM, HfAutoTokenizer, HfTrainer, HfTrainingArguments
-            from sentence_transformers import SentenceTransformer as STrans
-            SentenceTransformer = STrans
-            logger.info("Heavy libraries dynamically loaded.")
+        if not self.sandbox_test_mode:
+            global torch, yaml, wandb, AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments, SentenceTransformer
+            if torch is None or AutoModelForCausalLM is None or SentenceTransformer is None or yaml is None:
+                import torch
+                import yaml as pyyaml_module
+                yaml = pyyaml_module
+                from transformers import AutoModelForCausalLM as HfAutoModelForCausalLM, \
+                                         AutoTokenizer as HfAutoTokenizer, \
+                                         Trainer as HfTrainer, \
+                                         TrainingArguments as HfTrainingArguments
+                AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments = HfAutoModelForCausalLM, HfAutoTokenizer, HfTrainer, HfTrainingArguments
+                from sentence_transformers import SentenceTransformer as STrans
+                SentenceTransformer = STrans
+                logger.info("Core heavy libraries dynamically loaded.")
+
+            if self.use_wandb and wandb is None: # Check if wandb needs to be loaded
+                try:
+                    import wandb as wb_module
+                    wandb = wb_module
+                    logger.info("Weights & Biases library dynamically loaded.")
+                except ImportError:
+                    logger.warning("wandb library not found during _ensure_libs_loaded, but use_wandb is True. Disabling W&B for this session.")
+                    self.use_wandb = False
 
 
     def _load_config(self, config_path: str) -> Dict:
@@ -312,7 +357,19 @@ class RAFTSystem:
 
         # Continuous learning: collect feedback (simplified)
         if self.config.get("continuous_learning"):
-            self.active_learner.add_interaction_data(query, context, response, domain=domain) # TODO: Add feedback mechanism
+            # TODO: Obtain actual user_feedback_score (e.g., from UI, explicit feedback, or implicit signals)
+            user_feedback_score_placeholder = None # Placeholder for now
+            self.active_learner.add_interaction_data(query, context, response, domain=domain, feedback_score=user_feedback_score_placeholder)
+
+            # If RL is enabled, perform an RL step
+            if self.config.get("reinforcement_learning_integration"):
+                self.integrate_reinforcement_learning_step(
+                    query=query,
+                    selected_model_name=selected_llm, # The LLM that was used
+                    generated_response=response,
+                    domain=domain,
+                    user_feedback_score=user_feedback_score_placeholder # Pass the same feedback score
+                )
 
         return response
 
@@ -331,12 +388,91 @@ class RAFTSystem:
         # TODO: Implement more sophisticated routing based on:
         # 1. Query analysis (e.g., using a small model to classify query type)
         # 2. Complexity assessment
-        # 3. Model performance analytics (self.model_performance_analytics)
+        # 3. Model performance analytics (self.model_performance_analytics) - partially with RL scores
         # 4. Dynamic model ensembling (if multiple models are suitable)
 
-        default_model = self.config.get("default_base_llm", DEFAULT_BASE_LLM)
-        logger.info(f"Routing to default model: {default_model}")
-        return default_model
+        candidate_models = []
+        # Prefer domain-specific model if available
+        if domain and domain in self.global_llm_registry.list_models():
+            candidate_models.append(domain)
+            logger.debug(f"Intelligent routing: Domain model '{domain}' is a candidate.")
+
+        # Add other available models from the registry (e.g., general purpose, other fine-tuned models)
+        # For simplicity, let's consider all registered models as potential candidates for now.
+        # A more advanced system might pre-filter based on capability tags.
+        all_registered_llms = self.global_llm_registry.list_models()
+        for m_name in all_registered_llms:
+            if m_name not in candidate_models:
+                candidate_models.append(m_name)
+
+        if not candidate_models:
+            # Fallback to the absolute default if no models are registered at all
+            logger.warning("Intelligent routing: No models in global_llm_registry. Falling back to DEFAULT_BASE_LLM.")
+            # Ensure DEFAULT_BASE_LLM is at least attempted to be loaded if not already
+            if DEFAULT_BASE_LLM not in self.global_llm_registry.list_models() and not self.sandbox_test_mode:
+                try:
+                    default_llm_instance = self.HuggingFaceLLM_class(DEFAULT_BASE_LLM)
+                    self.global_llm_registry.register_model(DEFAULT_BASE_LLM, default_llm_instance)
+                    logger.info(f"Intelligent routing: Loaded and registered DEFAULT_BASE_LLM '{DEFAULT_BASE_LLM}'.")
+                except Exception as e:
+                    logger.error(f"Intelligent routing: Failed to load DEFAULT_BASE_LLM '{DEFAULT_BASE_LLM}': {e}")
+                    raise RuntimeError(f"RAFTSystem cannot operate without any LLMs. Default load failed: {e}")
+            elif self.sandbox_test_mode and DEFAULT_BASE_LLM not in self.global_llm_registry.list_models():
+                 self.global_llm_registry.register_model(DEFAULT_BASE_LLM, self.LLMService_class()) # Register dummy
+            return DEFAULT_BASE_LLM
+
+        # Score candidates based on available information (e.g., RL preference)
+        scored_candidates = []
+        for model_name_cand in candidate_models:
+            score = 0.0
+            # Factor 1: Domain match (already handled by putting domain model first if it exists)
+            if model_name_cand == domain:
+                score += 1.0 # Higher base score for direct domain match
+
+            # Factor 2: RL preference score (if available)
+            if model_name_cand in self.model_performance_analytics:
+                rl_pref = self.model_performance_analytics[model_name_cand].get("rl_preference_score", 0.0)
+                score += rl_pref * 0.5 # Weight RL preference (can be tuned)
+                logger.debug(f"Intelligent routing: Model '{model_name_cand}' has RL preference score: {rl_pref:.3f}")
+
+            # TODO: Add other factors like historical performance on similar query types, model capabilities tags etc.
+            scored_candidates.append({"name": model_name_cand, "score": score})
+
+        # Sort candidates by score (descending)
+        sorted_candidates = sorted(scored_candidates, key=lambda x: x["score"], reverse=True)
+
+        if not sorted_candidates: # Should not happen if candidate_models had items
+             selected_model_name = self.config.get("default_base_llm", DEFAULT_BASE_LLM)
+             logger.warning(f"Intelligent routing: No candidates after scoring, falling back to default: {selected_model_name}")
+        else:
+            selected_model_name = sorted_candidates[0]["name"]
+            logger.info(f"Intelligent routing selected model: '{selected_model_name}' with score {sorted_candidates[0]['score']:.3f} (Domain: {domain}, Query: '{query[:30]}...')")
+            if len(sorted_candidates) > 1:
+                logger.debug(f"Other candidates: {[{c['name']: c['score']} for c in sorted_candidates[1:3]]}")
+
+
+        # Ensure the selected model is actually available in the registry
+        if selected_model_name not in self.global_llm_registry.list_models():
+            logger.error(f"Intelligent routing selected model '{selected_model_name}' but it's not in the global_llm_registry. Critical error or misconfiguration.")
+            # Fallback to an absolute default or raise error
+            default_model_fallback = self.config.get("default_base_llm", DEFAULT_BASE_LLM)
+            if default_model_fallback in self.global_llm_registry.list_models():
+                logger.warning(f"Falling back to default model '{default_model_fallback}' due to selection error.")
+                return default_model_fallback
+            else:
+                # This is a critical state, try to load the default if not even that is available
+                if not self.sandbox_test_mode:
+                    try:
+                        def_llm = self.HuggingFaceLLM_class(default_model_fallback)
+                        self.global_llm_registry.register_model(default_model_fallback, def_llm)
+                        return default_model_fallback
+                    except Exception as e_load:
+                         raise RuntimeError(f"Selected model '{selected_model_name}' and fallback default '{default_model_fallback}' are unavailable: {e_load}")
+                else: # sandbox mode, just return the name
+                    return default_model_fallback
+
+
+        return selected_model_name
 
     def fine_tune_llm_on_custom_data(
         self,
@@ -434,6 +570,7 @@ class RAFTSystem:
 
         # Start fine-tuning
         logger.info("Starting LLM fine-tuning process...")
+        training_start_time = datetime.now() # Record start time
         trainer.train()
         trainer.save_model(output_model_dir)
         tokenizer.save_pretrained(output_model_dir)
@@ -445,25 +582,86 @@ class RAFTSystem:
         self.global_llm_registry.register_model(model_name, HuggingFaceLLM(model_name=output_model_dir))
         logger.info(f"Fine-tuned model '{model_name}' registered.")
 
-        # Create a dummy ModelVersion for now, this needs to be more robust
-        # This should ideally come from the model registry's own mechanisms
-        model_version_info = {
+        training_end_time = datetime.now()
+        # Ensure training_start_time is defined; if not, this indicates an issue or prior step skip.
+        training_duration_seconds = None
+        if 'training_start_time' in locals(): # Check if training_start_time was set
+            training_duration_seconds = (training_end_time - training_start_time).total_seconds()
+        else:
+            logger.warning("training_start_time not found in local scope for fine_tune_llm_on_custom_data. Duration will be None.")
+
+        # TODO: Add actual evaluation metrics post-training if a quick eval step is feasible
+        # For now, using loss from trainer state if available
+        final_loss = None
+        if hasattr(trainer, 'state') and trainer.state.log_history:
+            # Find the last entry that contains 'loss' or 'train_loss'
+            for log_entry in reversed(trainer.state.log_history):
+                if 'loss' in log_entry:
+                    final_loss = log_entry['loss']
+                    break
+                elif 'train_loss' in log_entry: # Sometimes it's train_loss
+                    final_loss = log_entry['train_loss']
+                    break
+        eval_metrics_data = {"final_training_loss": final_loss} # More descriptive key
+
+        model_version_metadata = {
             "base_model": _base_model_name,
-            "training_date": "", # Placeholder
-            "eval_metrics": {} # Placeholder
+            "training_dataset": os.path.basename(dataset_path),
+            "training_args_used": default_training_args, # The actual args passed to TrainingArguments
+            "training_duration_seconds": training_duration_seconds,
+            "eval_metrics": eval_metrics_data,
+            "model_type": "llm", # Explicitly set model type
+            "fine_tuning_method": "huggingface_trainer_api" # More specific
         }
-        model_version = ModelVersion(
-            name=model_name,
-            version="1.0.0-custom",
-            path=output_model_dir,
-            metadata=model_version_info,
-            description=f"Custom fine-tuned LLM based on {_base_model_name} using {os.path.basename(dataset_path)}"
+
+        # Generate a version string, e.g., based on timestamp or an incrementing number
+        # This could be enhanced later with git commit hash or other versioning schemes
+        version_str = f"1.0.0-{training_end_time.strftime('%Y%m%d%H%M%S')}"
+
+        # Use self.ModelVersion_class which could be DummyModelVersion or RealModelVersion
+        model_version_obj = self.ModelVersion_class(
+            name=model_name, # The name for this specific fine-tuned variant
+            version=version_str,
+            path=output_model_dir, # Path where the model is saved
+            metadata=model_version_metadata,
+            description=f"Custom fine-tuned LLM '{model_name}' (v{version_str}) based on '{_base_model_name}' using dataset '{os.path.basename(dataset_path)}'."
         )
-        # self.model_registry.register_model(model_version) # This was for embedding models, need similar for LLMs
-        return model_version # Placeholder return
+
+        # Register with the main model registry (self.model_registry)
+        # This registry instance should handle the ModelVersionTracker interaction.
+        self.model_registry.register_model(model_version_obj) # ModelRegistry.register_model expects a ModelVersion object
+        logger.info(f"Fine-tuned LLM '{model_name}' (version: {version_str}) registered with ModelRegistry.")
+
+        # Also, update the global_llm_registry if this model is to be immediately usable by that name
+        # This assumes HuggingFaceLLM can be loaded from the output_model_dir
+        if not self.sandbox_test_mode : # Avoid loading real models in sandbox
+             self.global_llm_registry.register_model(model_name, self.HuggingFaceLLM_class(model_name=output_model_dir))
+             logger.info(f"Fine-tuned model '{model_name}' also made available in global_llm_registry.")
+        else:
+             logger.info(f"[Sandbox Mode] Fine-tuned model '{model_name}' registered in ModelRegistry (dummy), not loaded into global_llm_registry.")
+
+        # Track this fine-tuning event as an experiment
+        self.track_experiment(
+            experiment_name=f"llm_finetune_{model_name}_{version_str}",
+            params={
+                "model_name": model_name,
+                "version": version_str,
+                "base_model": _base_model_name,
+                "dataset": os.path.basename(dataset_path),
+                "training_args": default_training_args,
+            },
+            metrics={
+                "final_training_loss": final_loss,
+                "training_duration_seconds": training_duration_seconds,
+                # TODO: Add more comprehensive evaluation metrics here after an eval step
+            },
+            experiment_type="llm_fine_tuning"
+        )
+
+        return model_version_obj # Return the created ModelVersion object
 
 
-    async def execute_raft_cycle(self, query: str, domain: Optional[str] = None, search_system: Optional[Any] = None) -> Dict[str, Optional[str]]: # search_system is AdvancedSearchSystem
+    async def execute_raft_cycle(self, query: str, domain: Optional[str] = None, search_system: Optional[Any] = None, wandb_run: Optional[Any] = None) -> Dict[str, Optional[str]]: # search_system is AdvancedSearchSystem, wandb_run for W&B
         """
         Executes a single RAFT cycle: Retrieve, Augment, Fine-tune, Generate.
         Returns a dictionary with 'model_path' and 'response'.
@@ -646,17 +844,103 @@ class RAFTSystem:
 
         # The model_description is important for the registry
         description = f"Custom fine-tuned embedding model '{model_name}' based on {_base_embedding_model}."
+
+        training_start_time = datetime.now()
         best_model_path = self.embedding_trainer.train(model_name=model_name, model_description=description)
+        training_duration_seconds = (datetime.now() - training_start_time).total_seconds()
+
         logger.info(f"Fine-tuned embedding model saved to {best_model_path}. Registered as '{model_name}'.")
+
+        # Retrieve the ModelVersion object created by EmbeddingTrainer via ModelRegistry
+        # This assumes EmbeddingTrainer registers it and we can fetch it.
+        # ModelRegistry.get_model_version needs model_name and model_type.
+        # EmbeddingTrainer should register with model_type="embedding".
+        model_version_obj = self.model_registry.get_model_version(model_name=model_name, model_type="embedding", version_str="latest") # Assuming "latest" gets the one just trained
+
+        version_str_logged = model_version_obj.version if model_version_obj else "unknown"
+        eval_metrics_logged = model_version_obj.metadata.get("eval_metrics", {}) if model_version_obj else {}
+
+        self.track_experiment(
+            experiment_name=f"embedding_finetune_{model_name}_{version_str_logged}",
+            params={
+                "model_name": model_name,
+                "version": version_str_logged,
+                "base_model": _base_embedding_model,
+                "num_texts": len(texts),
+                "training_args": default_training_config, # Config used for the trainer
+            },
+            metrics={
+                "eval_metrics": eval_metrics_logged, # Metrics from EmbeddingTrainer's eval
+                "training_duration_seconds": training_duration_seconds,
+            },
+            experiment_type="embedding_fine_tuning"
+        )
         return best_model_path
 
 
     # --- RAFT Enhancements ---
-    def track_experiment(self, experiment_name: str, params: Dict, metrics: Dict):
-        """Tracks experiments for RAFT."""
-        # TODO: Integrate with a proper experiment tracking tool (e.g., MLflow, W&B)
-        self.experiment_tracking[experiment_name] = {"params": params, "metrics": metrics, "timestamp": ""} # Add timestamp
-        logger.info(f"Tracked experiment: {experiment_name}")
+    def track_experiment(self, experiment_name: str, params: Dict, metrics: Dict, experiment_type: str = "raft_cycle"):
+        """
+        Tracks experiments for RAFT, logging to W&B if enabled, otherwise to a local dictionary.
+        Manages a persistent W&B run for the RAFTSystem instance if W&B is active.
+        """
+        timestamp_str = datetime.now().isoformat()
+
+        if self.use_wandb and wandb:
+            if self.current_wandb_run is None:
+                try:
+                    self.current_wandb_run = wandb.init(
+                        project=self.wandb_project,
+                        name=f"RAFTSystemRun-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+                        config=self.config, # Log base RAFT config
+                        reinit=True # Allow reinit if a run was ended prematurely
+                    )
+                    logger.info(f"Initialized W&B run: {self.current_wandb_run.name} (ID: {self.current_wandb_run.id})")
+                except Exception as e:
+                    logger.error(f"Failed to initialize W&B run: {e}. Falling back to local tracking for this session.")
+                    self.use_wandb = False # Disable for session to avoid repeated errors
+
+            if self.use_wandb and self.current_wandb_run: # Check again in case init failed
+                # Log experiment as a distinct step or nested structure within the run
+                log_data = {
+                    f"experiments/{experiment_name}/params": params,
+                    f"experiments/{experiment_name}/metrics": metrics,
+                    f"experiments/{experiment_name}/timestamp": timestamp_str,
+                    f"experiments/{experiment_name}/type": experiment_type,
+                }
+                # Flatten metrics and params for easier W&B table/charting if simple
+                flat_log_data = {}
+                for k, v in params.items():
+                    flat_log_data[f"{experiment_name}_param_{k}"] = v
+                for k, v in metrics.items():
+                    flat_log_data[f"{experiment_name}_metric_{k}"] = v
+                flat_log_data[f"{experiment_name}_timestamp"] = timestamp_str
+                flat_log_data[f"{experiment_name}_type"] = experiment_type
+
+                self.current_wandb_run.log(flat_log_data) # Log flattened data
+                logger.info(f"Logged experiment '{experiment_name}' to W&B run '{self.current_wandb_run.name}'.")
+
+
+        # Always log to local experiment_tracking as a fallback or for quick inspection
+        if experiment_name not in self.experiment_tracking:
+            self.experiment_tracking[experiment_name] = []
+
+        self.experiment_tracking[experiment_name].append({
+            "params": params,
+            "metrics": metrics,
+            "timestamp": timestamp_str,
+            "type": experiment_type,
+            "logged_to_wandb": self.use_wandb and bool(self.current_wandb_run)
+        })
+        logger.info(f"Tracked experiment locally: {experiment_name}")
+
+    def close_wandb_run(self):
+        """Closes the current W&B run if active."""
+        if self.use_wandb and wandb and self.current_wandb_run:
+            self.current_wandb_run.finish()
+            logger.info(f"Closed W&B run: {self.current_wandb_run.name}")
+            self.current_wandb_run = None
+
 
     def update_model_performance(self, model_name: str, query_type: str, metrics: Dict):
         """Updates performance analytics for a given model."""
@@ -667,14 +951,102 @@ class RAFTSystem:
         self.model_performance_analytics[model_name][query_type].append(metrics)
         logger.info(f"Updated performance for model {model_name} on query type {query_type}")
 
-    # --- Placeholder for future integration ---
+    # --- Reinforcement Learning Integration ---
+    def _calculate_reward(self, query: str, response: str, domain: Optional[str], feedback_score: Optional[float] = None) -> float:
+        """
+        Calculates a reward score for a given query-response pair.
+        This is a simplified example. A more robust implementation would consider various factors.
+        """
+        reward = 0.0
+        # Factor 1: User feedback (if available)
+        if feedback_score is not None:
+            reward += feedback_score * 0.5  # Weight feedback score
+
+        # Factor 2: Response quality (placeholder - e.g., length, coherence, relevance to query if measurable)
+        if response and len(response) > 10: # Basic check for non-empty response
+            reward += 0.1
+        # TODO: Add more sophisticated response quality metrics (e.g., perplexity, ROUGE scores against a reference if applicable)
+
+        # Factor 3: Domain relevance (placeholder)
+        # If we could measure how "on-domain" the response is.
+        # Example: if domain == "finance" and "stock market" in response: reward += 0.1
+
+        # Normalize reward to a typical range, e.g., [-1, 1] or [0, 1]
+        # For simplicity, current reward is positive-biased.
+        return max(0, min(1, reward)) # Clip to [0,1] for this example
+
+    def integrate_reinforcement_learning_step(
+        self,
+        query: str,
+        selected_model_name: str,
+        generated_response: str,
+        domain: Optional[str] = None,
+        user_feedback_score: Optional[float] = None # e.g., from a thumbs up/down, converted to -1 to 1
+    ):
+        """
+        Performs a single step of reinforcement learning update.
+        This method would be called after a response is generated and (optionally) feedback is received.
+        """
+        if not self.config.get("reinforcement_learning_integration"):
+            return
+
+        logger.info(f"RL Step: Updating policy based on response for query '{query}' using model '{selected_model_name}'.")
+
+        # 1. Calculate Reward
+        reward = self._calculate_reward(query, generated_response, domain, user_feedback_score)
+        logger.info(f"RL Step: Calculated reward: {reward:.2f}")
+
+        # 2. Update Policy (Conceptual)
+        # The "policy" here could be parameters influencing model selection in `_intelligent_route_model`
+        # or parameters for the fine-tuning process.
+        # This is highly dependent on the specific RL algorithm chosen (e.g., Q-learning, policy gradients).
+
+        # Example: Adjust preference scores for models in `_intelligent_route_model`
+        # This is a very simplified heuristic, not a full RL algorithm.
+        if selected_model_name not in self.model_performance_analytics:
+            self.model_performance_analytics[selected_model_name] = {"rl_preference_score": 0.0, "rl_updates": 0}
+
+        current_pref = self.model_performance_analytics[selected_model_name].get("rl_preference_score", 0.0)
+        num_updates = self.model_performance_analytics[selected_model_name].get("rl_updates", 0)
+
+        # Simple update rule: move preference towards reward
+        learning_rate = 0.01 # Small learning rate
+        new_pref = current_pref + learning_rate * (reward - 0.5) # Assuming reward is ~0.5 for neutral
+
+        self.model_performance_analytics[selected_model_name]["rl_preference_score"] = new_pref
+        self.model_performance_analytics[selected_model_name]["rl_updates"] = num_updates + 1
+
+        logger.info(f"RL Step: Updated preference for model '{selected_model_name}' to {new_pref:.3f} (based on {num_updates+1} updates).")
+
+        # TODO: Implement a more formal RL agent and algorithm.
+        # - State representation: (query features, domain, context features, available models)
+        # - Action space: (select model X, choose fine-tuning strategy Y)
+        # - RL Agent: (e.g., DQN, A2C) that learns a Q-function or policy.
+        # - This might involve a separate RLTrainer class or module.
+
+        # Log RL step details
+        self.track_experiment(
+            experiment_name=f"rl_step_{selected_model_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            params={
+                "query": query,
+                "selected_model": selected_model_name,
+                "domain": domain,
+                "user_feedback_score": user_feedback_score,
+            },
+            metrics={
+                "calculated_reward": reward,
+                "updated_rl_preference_score": new_pref,
+            },
+            experiment_type="rl_update_step"
+        )
+
+    # Placeholder for the old method name if it's called elsewhere, can be removed if not.
     def integrate_reinforcement_learning(self):
-        """Placeholder for RL integration for model optimization."""
+        """Placeholder for general RL integration. Specific updates are done via `integrate_reinforcement_learning_step`."""
         if self.config.get("reinforcement_learning_integration"):
-            logger.info("Reinforcement learning integration is enabled (placeholder).")
-            # TODO: Implement RL components (e.g., reward functions, policy updates)
-            # This could involve using feedback from active_learner or other sources.
-            pass
+            logger.info("Reinforcement learning integration is enabled. Call 'integrate_reinforcement_learning_step' after generation and feedback.")
+        else:
+            logger.info("Reinforcement learning integration is disabled in config.")
 
 
 if __name__ == "__main__":

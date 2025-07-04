@@ -7,27 +7,46 @@ import numpy as np
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from Scripts.search_system import AdvancedSearchSystem, SearchResult, CrossEncoderReRanker, KnowledgeGraphSearch
-from Scripts.embeddings import EmbeddingProvider # For mocking
+from Scripts.embeddings import EmbeddingProvider # Used by AdvancedSearchSystem for type hints
 from Scripts.knowledge_graph.graph import KnowledgeGraph # For mocking KG
 from Scripts.embedding_strategy import EmbeddingStrategyManager, EmbeddingModelMeta
+from dataclasses import dataclass # Added for SearchResult if not already present
+
+from Scripts.embedding_strategy import EmbeddingStrategyManager, EmbeddingModelMeta
+# dataclasses may not be needed if SearchResult is imported directly
+# from dataclasses import dataclass
 
 # Since AdvancedSearchSystem methods are async and involve other async components,
 # we use IsolatedAsyncioTestCase.
 
+# Ensure Scripts directory is in path for imports if running tests from root
+import sys
+import os # Ensure os is imported for abspath
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../Scripts')))
+
+# Import SearchResult directly from the source module
+from Scripts.search_system import SearchResult
+
 class TestAdvancedSearchSystem(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
-        # Mock EmbeddingProvider
-        self.mock_embedding_provider = AsyncMock(spec=EmbeddingProvider)
-        self.mock_embedding_provider.get_embedding_dim.return_value = 384 # Example dim
+        # Mock EmbeddingProvider (from the old Scripts.embeddings)
+        self.mock_embedding_provider_instance = AsyncMock(spec=EmbeddingProvider)
+        self.mock_embedding_provider_instance.get_embedding_dim.return_value = 384 # Example dim
         async def mock_generate_embeddings(texts, **kwargs):
             if isinstance(texts, str): texts = [texts]
-            return [[0.1] * 384 for _ in texts] # Return dummy embeddings of correct dim
-        self.mock_embedding_provider.generate_embeddings = mock_generate_embeddings
+            # Simulate embeddings that might lead to predictable FAISS results if not mocking FAISS itself
+            # For "dog", make it distinct
+            if "dog" in texts[0].lower():
+                return [[0.1 + i*0.01] * 384 for i, _ in enumerate(texts)]
+            return [[0.5 + i*0.01] * 384 for i, _ in enumerate(texts)]
+        self.mock_embedding_provider_instance.generate_embeddings = mock_generate_embeddings
 
         # Mock EmbeddingStrategyManager
         self.mock_strategy_manager = MagicMock(spec=EmbeddingStrategyManager)
-        self.mock_strategy_manager.get_embedding_provider.return_value = self.mock_embedding_provider
+        self.mock_strategy_manager.get_embedding_provider.return_value = self.mock_embedding_provider_instance
+        self.mock_strategy_manager.default_embedding_strategy_params = {"language": "en", "modality": "text"}
+
 
         # Sample documents for keyword and semantic indexing
         self.sample_docs = [
@@ -57,17 +76,58 @@ class TestAdvancedSearchSystem(unittest.IsolatedAsyncioTestCase):
 
 
         # Build semantic index (FAISS) with dummy embeddings
-        # Need to ensure faiss is available or mock it too for pure unit tests not requiring faiss binary
-        try:
-            import faiss
-            await self.search_system.build_semantic_index(self.sample_docs)
-        except ImportError:
-            # If faiss is not installed, we can't fully test semantic search.
-            # We can mock self.search_system._perform_semantic_search
-            self.search_system._perform_semantic_search = AsyncMock(return_value=[
-                SearchResult(doc_id="doc1", score=0.9, source_type="semantic", content=self.sample_docs[0]["text"])
-            ])
-            print("FAISS not installed, _perform_semantic_search mocked.")
+        # Mocking FAISS for unit tests to avoid binary dependency issues in all environments
+        self.mock_faiss_index = MagicMock()
+        async def mock_perform_semantic_search(query_embedding, top_k):
+            # Simulate some results based on query_embedding characteristics if needed for more complex tests
+            # For now, return a fixed list or a list derived from sample_docs
+            # This mock should align with what build_semantic_index would have stored.
+            # Let's assume "dog" query matches doc1 and doc4 semantically.
+            # A real test with FAISS would be an integration test.
+            if np.allclose(query_embedding, np.array([[0.1]*384])): # Matches "dog" based on our mock_generate_embeddings
+                 return [
+                    SearchResult(doc_id="doc1", score=0.95, source_type="semantic", content=self.sample_docs[0]["text"]),
+                    SearchResult(doc_id="doc4", score=0.85, source_type="semantic", content=self.sample_docs[3]["text"]),
+                 ]
+            return [SearchResult(doc_id="doc3", score=0.9, source_type="semantic", content=self.sample_docs[2]["text"])] # Default mock
+
+        with patch('faiss.IndexFlatIP', return_value=self.mock_faiss_index) as mock_faiss_constructor, \
+             patch('faiss.normalize_L2') as mock_faiss_normalize:
+
+            # Ensure that AdvancedSearchSystem's faiss_index is set to our mock after build
+            # We need to ensure build_semantic_index uses the mocked faiss.IndexFlatIP
+            # One way is to ensure that when build_semantic_index is called, the faiss module's
+            # IndexFlatIP is already the mock.
+            # The patch context manager should handle this if `import faiss` is inside build_semantic_index.
+            # If `import faiss` is at module level, this patching strategy is more complex.
+            # Assuming `import faiss` is local to methods using it, or that this patch works.
+
+            # Temporarily assign the mock index to the system instance for testing search method
+            # More robustly, build_semantic_index should use the patched faiss and set this.
+            # For this setup, we'll also directly mock _perform_semantic_search for simplicity,
+            # as testing the FAISS build process itself is an integration concern.
+
+            await self.search_system.build_semantic_index(self.sample_docs) # This will now use mocked faiss if import is local
+            # If build_semantic_index internally imports faiss, the patch should work.
+            # If faiss is imported at module level in search_system.py, the patch needs to be at module level of search_system.
+            # For now, let's confirm the state of self.search_system.faiss_index
+            if self.search_system.faiss_index is not self.mock_faiss_index and self.search_system.faiss_index is not None:
+                 print(f"Warning: search_system.faiss_index was not the mock. Type: {type(self.search_system.faiss_index)}")
+                 # This means the actual faiss was likely used. For CI, this might be an issue.
+                 # Fallback to mocking _perform_semantic_search directly for unit test reliability
+                 self.search_system._perform_semantic_search = AsyncMock(side_effect=mock_perform_semantic_search)
+                 print("FAISS interaction fully mocked by replacing _perform_semantic_search.")
+            elif self.search_system.faiss_index is self.mock_faiss_index:
+                 print("FAISS IndexFlatIP successfully mocked for build_semantic_index.")
+                 # If FAISS was mocked for build, then _perform_semantic_search would use the mock index.
+                 # We'd need to configure mock_faiss_index.search to return sensible values.
+                 # For simplicity in this unit test, we'll still mock _perform_semantic_search.
+                 self.search_system._perform_semantic_search = AsyncMock(side_effect=mock_perform_semantic_search)
+                 print("FAISS interaction mocked by replacing _perform_semantic_search (even if build used mock index).")
+
+            else: # faiss_index is None (build failed or was skipped)
+                self.search_system._perform_semantic_search = AsyncMock(side_effect=mock_perform_semantic_search)
+                print("FAISS index is None, _perform_semantic_search directly mocked.")
 
 
     def test_initialization(self):

@@ -4,6 +4,7 @@ Agent Network and Message Router for the Collaborative Agent System.
 import logging
 import asyncio
 from typing import Dict, Optional, List, Callable, Any # Added Any
+from datetime import datetime # Added for network_stats timestamp
 
 from .base_agent import Agent, Message
 
@@ -164,20 +165,116 @@ class AgentNetwork:
             content=task_content
         )
 
-    # --- Performance Monitoring & Scaling (Placeholders) ---
+    # --- Performance Monitoring & Scaling ---
     def get_network_stats(self) -> Dict[str, Any]:
-        """Returns statistics about the agent network."""
-        agent_statuses = {agent_id: agent.status for agent_id, agent in self.agents.items()}
+        """Returns detailed statistics about the agent network, including performance."""
+        agent_details = {}
+        total_tasks_processed = 0
+        total_successful_tasks = 0
+        total_failed_tasks = 0
+
+        for agent_id, agent_instance in self.agents.items():
+            # Ensure agent_instance is not None and has performance_metrics attribute
+            if agent_instance and hasattr(agent_instance, 'performance_metrics') and isinstance(agent_instance.performance_metrics, dict):
+                perf_metrics = agent_instance.performance_metrics
+                total_tasks_processed += perf_metrics.get("tasks_processed", 0)
+                total_successful_tasks += perf_metrics.get("successful_tasks", 0)
+                total_failed_tasks += perf_metrics.get("failed_tasks", 0)
+
+                agent_details[agent_id] = {
+                    "name": agent_instance.agent_name,
+                    "status": agent_instance.status,
+                    "capabilities": agent_instance.capabilities,
+                    "mailbox_size": agent_instance.mailbox.qsize(),
+                    "performance": perf_metrics, # Includes tasks_processed, successful, failed, avg_time
+                    "task_history_count": len(getattr(agent_instance, '_task_history', [])), # Accessing protected member for stats
+                }
+            elif agent_instance: # Basic info if performance_metrics missing
+                 agent_details[agent_id] = {
+                    "name": agent_instance.agent_name,
+                    "status": agent_instance.status,
+                    "capabilities": agent_instance.capabilities,
+                    "mailbox_size": agent_instance.mailbox.qsize(),
+                    "performance": "N/A",
+                    "task_history_count": len(getattr(agent_instance, '_task_history', [])),
+                }
+
+
         return {
+            "timestamp": datetime.utcnow().isoformat(), # Added timestamp
             "total_agents": len(self.agents),
-            "agent_statuses": agent_statuses,
             "message_bus_size": self.message_bus.qsize(),
-            "capability_distribution": {cap: len(ids) for cap, ids in self.agent_capabilities.items()}
+            "capability_distribution": {cap: len(ids) for cap, ids in self.agent_capabilities.items()},
+            "agents": agent_details, # Detailed per-agent stats
+            "overall_performance": {
+                "total_tasks_processed": total_tasks_processed,
+                "total_successful_tasks": total_successful_tasks,
+                "total_failed_tasks": total_failed_tasks,
+            }
         }
 
-    def scale_agents_for_capability(self, capability: str, desired_count: int):
-        """Placeholder for dynamic scaling of agents for a given capability."""
-        # This would involve creating or terminating agent instances.
-        # Complex, requires agent lifecycle management, resource allocation, etc.
-        logger.warning(f"Dynamic scaling for capability '{capability}' to {desired_count} is a placeholder.")
-        pass
+    async def scale_agents_for_capability(self, capability: str, desired_count: int, agent_type_to_create: Optional[type] = None, agent_init_kwargs: Optional[Dict] = None):
+        """
+        Simulates dynamic scaling of agents for a given capability.
+        If current agent count for the capability is less than desired_count,
+        it creates and registers new agents of agent_type_to_create.
+        """
+        agent_init_kwargs = agent_init_kwargs or {}
+        current_agents_with_capability = self.find_agents_with_capability(capability)
+        current_count = len(current_agents_with_capability)
+        agents_to_add = desired_count - current_count
+
+        logger.info(f"Scaling check for capability '{capability}': Current={current_count}, Desired={desired_count}")
+
+        if agents_to_add <= 0:
+            logger.info(f"No scaling needed for capability '{capability}'. Current count ({current_count}) meets or exceeds desired ({desired_count}).")
+            return
+
+        if not agent_type_to_create:
+            logger.error(f"Cannot scale capability '{capability}': agent_type_to_create not provided.")
+            return
+
+        if not issubclass(agent_type_to_create, Agent):
+            logger.error(f"Cannot scale capability '{capability}': agent_type_to_create is not a subclass of Agent.")
+            return
+
+        logger.info(f"Scaling up capability '{capability}' by adding {agents_to_add} new agents of type {agent_type_to_create.__name__}.")
+
+        newly_created_agents: List[Agent] = []
+        for i in range(agents_to_add):
+            try:
+                # Ensure common arguments for Agent are passed if not in agent_init_kwargs
+                # For SpecialistAgent, 'expertise' is key. If agent_type_to_create is SpecialistAgent or subclass,
+                # and expertise is not in kwargs, it might use capability.
+                # This part is tricky without knowing the exact constructor signature of agent_type_to_create.
+                # A robust solution would involve a factory pattern or standardized agent constructors.
+
+                # A common pattern for SpecialistAgent is that its expertise is related to the capability.
+                # E.g. capability "execute_task:research" -> expertise "research"
+                # We assume agent_init_kwargs will contain necessary args like 'expertise' if it's a SpecialistAgent.
+                # Or, if it's a generic agent_type_to_create, it might not need specific args beyond agent_id/name.
+
+                # Example: if agent_type_to_create is a SpecialistAgent and needs 'expertise'
+                if "expertise" not in agent_init_kwargs and capability.startswith("execute_task:"):
+                     agent_init_kwargs_specialized = agent_init_kwargs.copy()
+                     agent_init_kwargs_specialized["expertise"] = capability.split(":",1)[1]
+                     new_agent = agent_type_to_create(network=self, **agent_init_kwargs_specialized)
+                else:
+                     new_agent = agent_type_to_create(network=self, **agent_init_kwargs) # Pass self as network
+
+                await self.register_agent(new_agent)
+                # Important: Start the new agent's processing loop
+                # This assumes the agent's start() method is designed to be run like this.
+                asyncio.create_task(new_agent.start())
+                logger.info(f"Created and registered new agent {new_agent.agent_name} ({new_agent.agent_id}) for capability '{capability}'. Task loop started.")
+                newly_created_agents.append(new_agent)
+            except Exception as e:
+                logger.error(f"Error creating or registering new agent for capability '{capability}': {e}", exc_info=True)
+
+        if newly_created_agents:
+            logger.info(f"Successfully added {len(newly_created_agents)} agents for capability '{capability}'.")
+        else:
+            logger.warning(f"No new agents were added for capability '{capability}' despite request for {agents_to_add}.")
+
+        # Note: This doesn't handle scaling down or resource limits.
+        # True dynamic scaling would involve a resource manager, agent lifecycle events, etc.

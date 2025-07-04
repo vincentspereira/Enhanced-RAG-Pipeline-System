@@ -14,7 +14,10 @@ from ebooklib import epub
 from bs4 import BeautifulSoup
 import pypandoc # Requires pandoc installation
 import nbformat # For Jupyter notebooks
-# from mailparser import parse_from_file as parse_email_file # For EML/MSG
+from email import policy
+from email.parser import BytesParser
+import extract_msg # For .msg files
+from pathlib import Path # Added for Path object usage
 # from odf import text, teletype # For ODP, ODS
 # from key_reader import KeyReader # For Apple Keynote (hypothetical)
 # from numbers_parser import Document as NDocument # For Apple Numbers (hypothetical)
@@ -242,73 +245,403 @@ def process_confluence_export(file_path: str) -> str:
     return f"Text from Confluence export {os.path.basename(file_path)} (Placeholder)"
 
 def process_eml(file_path: str) -> str:
-    """Processes EML (email) files."""
-    logger.warning(f"EML processing for {file_path} is a placeholder. Requires libraries like 'mailparser' or 'email'.")
-    # from email import message_from_file
-    # with open(file_path, 'r') as fp:
-    #     msg = message_from_file(fp)
-    # body = ""
-    # if msg.is_multipart():
-    #     for part in msg.walk():
-    #         ctype = part.get_content_type()
-    #         cdispo = str(part.get('Content-Disposition'))
-    #         if ctype == 'text/plain' and 'attachment' not in cdispo:
-    #             body = part.get_payload(decode=True).decode()
-    #             break
-    # else:
-    #     body = msg.get_payload(decode=True).decode()
-    # return f"Subject: {msg['subject']}\nFrom: {msg['from']}\nTo: {msg['to']}\nDate: {msg['date']}\n\n{body}"
-    return f"Text from EML file {os.path.basename(file_path)} (Placeholder)"
-
-def process_msg(file_path: str) -> str:
-    """Processes MSG (Outlook email) files."""
-    logger.warning(f"MSG processing for {file_path} is a placeholder. Requires libraries like 'extract_msg'.")
-    # import extract_msg
-    # msg = extract_msg.Message(file_path)
-    # return f"Subject: {msg.subject}\nFrom: {msg.sender}\nTo: {msg.to}\nDate: {msg.date}\n\nBody:\n{msg.body}"
-    return f"Text from MSG file {os.path.basename(file_path)} (Placeholder)"
-
-def process_cad_metadata(file_path: str) -> str:
-    """Placeholder for CAD file metadata extraction."""
-    logger.warning(f"CAD file processing for {file_path} is a placeholder; extracts filename and basic stats only.")
-    # In a real system, use libraries like ezdxf for DXF, or specific CAD libraries.
-    # For now, just return some basic file metadata.
+    """Processes EML (email) files using Python's email library."""
     try:
-        stat = os.stat(file_path)
-        return (f"CAD File: {os.path.basename(file_path)}\n"
-                f"Size: {stat.st_size} bytes\n"
-                f"Last Modified: {stat.st_mtime}")
+        with open(file_path, 'rb') as fp:
+            # Use BytesParser with a policy for modern email handling
+            msg = BytesParser(policy=policy.default).parse(fp)
+
+        text_content = []
+
+        # Extract common headers
+        subject = msg.get('subject', 'No Subject')
+        from_ = msg.get('from', 'Unknown Sender')
+        to_ = msg.get('to', 'Unknown Recipient')
+        date_ = msg.get('date', 'Unknown Date')
+
+        text_content.append(f"Subject: {subject}")
+        text_content.append(f"From: {from_}")
+        text_content.append(f"To: {to_}")
+        text_content.append(f"Date: {date_}")
+        text_content.append("\n--- Body ---")
+
+        body_found = False
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                content_disposition = str(part.get('Content-Disposition'))
+
+                if "attachment" not in content_disposition:
+                    if content_type == "text/plain":
+                        try:
+                            payload = part.get_payload(decode=True)
+                            charset = part.get_content_charset() or 'utf-8' # Default to utf-8
+                            text_content.append(payload.decode(charset, errors='replace'))
+                            body_found = True
+                        except Exception as e:
+                            logger.warning(f"Could not decode text/plain part in EML {file_path} with charset {part.get_content_charset()}: {e}")
+                    elif content_type == "text/html":
+                        try:
+                            payload = part.get_payload(decode=True)
+                            charset = part.get_content_charset() or 'utf-8'
+                            soup = BeautifulSoup(payload.decode(charset, errors='replace'), 'html.parser')
+                            html_text = soup.get_text(separator='\n', strip=True)
+                            if html_text and not body_found: # Prefer plain text if already found
+                                text_content.append(html_text)
+                                body_found = True # Consider HTML body found
+                        except Exception as e:
+                            logger.warning(f"Could not decode text/html part in EML {file_path} with charset {part.get_content_charset()}: {e}")
+                else:
+                    # Log attachment
+                    filename = part.get_filename()
+                    if filename:
+                        logger.info(f"Attachment found in EML {file_path}: {filename} (Type: {part.get_content_type()}). Processing not yet implemented.")
+                        # TODO: Save attachment and queue for recursive processing if supported type
+        else:
+            # Not multipart, try to get body directly
+            try:
+                payload = msg.get_payload(decode=True)
+                charset = msg.get_content_charset() or 'utf-8'
+                text_content.append(payload.decode(charset, errors='replace'))
+            except Exception as e:
+                 logger.error(f"Could not decode payload for non-multipart EML {file_path}: {e}")
+
+        return "\n".join(text_content)
     except Exception as e:
-        logger.error(f"Error getting metadata for CAD file {file_path}: {e}")
+        logger.error(f"Error processing EML file {file_path}: {e}")
         return ""
 
-# --- Audio/Video Placeholders ---
-def transcribe_audio_video(file_path: str, model_name: str = "base") -> str:
-    """Placeholder for audio/video transcription using Whisper."""
-    logger.warning(f"Audio/video transcription for {file_path} using Whisper is a placeholder.")
-    # import whisper
-    # model = whisper.load_model(model_name)
-    # result = model.transcribe(file_path)
-    # return result["text"]
-    return f"Transcription of {os.path.basename(file_path)} (Placeholder)"
+def process_msg(file_path: str) -> str:
+    """Processes MSG (Outlook email) files using extract_msg library."""
+    try:
+        msg = extract_msg.Message(file_path)
+        text_content = []
+
+        text_content.append(f"Subject: {msg.subject or 'No Subject'}")
+        text_content.append(f"From: {msg.sender or 'Unknown Sender'}")
+        text_content.append(f"To: {msg.to or 'Unknown Recipient'}")
+        text_content.append(f"Date: {msg.date or 'Unknown Date'}")
+        if msg.cc:
+            text_content.append(f"CC: {msg.cc}")
+        if msg.bcc:
+             text_content.append(f"BCC: {msg.bcc}")
+        text_content.append("\n--- Body ---")
+        text_content.append(msg.body or "No Body")
+
+        if msg.attachments:
+            text_content.append("\n--- Attachments ---")
+            for i, attachment in enumerate(msg.attachments):
+                # The attachment object itself might be a Message instance if it's an attached email
+                if isinstance(attachment, extract_msg.Message):
+                     filename = getattr(attachment, 'filename', f"attached_email_{i}.msg")
+                     logger.info(f"Attached email found in MSG {file_path}: {filename}. Processing not yet implemented recursively here.")
+                     text_content.append(f"Attached Email: {filename} (Further processing needed)")
+
+                elif hasattr(attachment, 'longFilename') and attachment.longFilename:
+                    filename = attachment.longFilename
+                    logger.info(f"Attachment found in MSG {file_path}: {filename} (Type: {getattr(attachment, 'type', 'unknown')}). Processing not yet implemented.")
+                    text_content.append(f"Attachment: {filename}")
+                elif hasattr(attachment, 'shortFilename') and attachment.shortFilename: # Fallback for filename
+                    filename = attachment.shortFilename
+                    logger.info(f"Attachment found in MSG {file_path}: {filename} (Type: {getattr(attachment, 'type', 'unknown')}). Processing not yet implemented.")
+                    text_content.append(f"Attachment: {filename}")
+
+                # TODO: Save attachment (attachment.data) and queue for recursive processing
+                # Example:
+                # Path(temp_dir_for_attachments / filename).write_bytes(attachment.data)
+
+        return "\n".join(text_content)
+    except Exception as e:
+        logger.error(f"Error processing MSG file {file_path}: {e}")
+        return ""
+
+def process_cad_metadata(file_path: str) -> str:
+    """
+    Processes DXF CAD files to extract metadata and text entities using ezdxf.
+    For other CAD formats, this would need different libraries.
+    """
+    file_path_obj = Path(file_path)
+    if file_path_obj.suffix.lower() != ".dxf":
+        logger.warning(f"CAD processing: {file_path_obj.name} is not a .dxf file. This handler primarily supports DXF. Returning basic stats.")
+        try:
+            stat = os.stat(file_path)
+            return (f"CAD File: {os.path.basename(file_path)}\n"
+                    f"Format: {file_path_obj.suffix.upper()} (Limited support - basic stats only)\n"
+                    f"Size: {stat.st_size} bytes")
+        except Exception as e:
+            logger.error(f"Error getting basic metadata for non-DXF CAD file {file_path}: {e}")
+            return ""
+
+    try:
+        import ezdxf
+        doc = ezdxf.readfile(file_path)
+        msp = doc.modelspace()
+
+        metadata_content = [
+            f"CAD Document: {os.path.basename(file_path)}",
+            f"DXF Version: {doc.dxfversion}",
+            f"File Encoding: {doc.encoding}",
+        ]
+
+        # Extract header variables (example: drawing limits, last saved by)
+        if "$LIMMIN" in doc.header:
+            metadata_content.append(f"Drawing Limits Min: {doc.header['$LIMMIN']}")
+        if "$LIMMAX" in doc.header:
+            metadata_content.append(f"Drawing Limits Max: {doc.header['$LIMMAX']}")
+        if "$LASTSAVEDBY" in doc.header:
+             metadata_content.append(f"Last Saved By: {doc.header['$LASTSAVEDBY']}")
+
+
+        # Extract layer names
+        layer_names = [layer.dxf.name for layer in doc.layers if layer.dxf.name.lower() not in ["0", "defpoints"]]
+        if layer_names:
+            metadata_content.append("\n--- Layers ---")
+            metadata_content.append(", ".join(sorted(list(set(layer_names)))))
+
+        # Extract block names
+        block_names = [block.name for block in doc.blocks if not block.is_any_anonymous and not block.is_layout_block()]
+        if block_names:
+            metadata_content.append("\n--- Blocks ---")
+            metadata_content.append(", ".join(sorted(list(set(block_names)))))
+
+        # Extract text entities
+        text_entities = []
+        for text_entity in msp.query('TEXT MTEXT'): # TEXT and MTEXT entities
+            text_value = ""
+            if text_entity.dxftype() == 'TEXT':
+                text_value = text_entity.dxf.text
+            elif text_entity.dxftype() == 'MTEXT':
+                text_value = text_entity.plain_text() # MTEXT stores text in a more complex way
+
+            if text_value.strip():
+                text_entities.append(text_value.strip())
+
+        if text_entities:
+            metadata_content.append("\n--- Text Content ---")
+            # Join unique text entities to avoid excessive repetition if many are identical
+            unique_texts = sorted(list(set(text_entities)))
+            metadata_content.extend(unique_texts)
+
+        logger.info(f"Successfully extracted metadata and text from DXF file: {file_path}")
+        return "\n".join(metadata_content)
+
+    except ImportError:
+        logger.error("ezdxf library is not installed. Cannot process DXF files.")
+        return f"Error: ezdxf library not installed. Cannot process DXF: {os.path.basename(file_path)}"
+    except ezdxf.DXFStructureError as e:
+        logger.error(f"DXF structure error in file {file_path}: {e}")
+        return f"Error: DXF structure error in {os.path.basename(file_path)}."
+    except Exception as e:
+        logger.error(f"Error processing DXF file {file_path}: {e}")
+        return f"Error processing DXF file {os.path.basename(file_path)}."
+
+# --- Audio/Video Processing ---
+def transcribe_audio_video(file_path: str, whisper_model_name: str = "base", device: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Transcribes audio/video file using Whisper and performs speaker diarization using pyannote.audio.
+    Returns a dictionary containing the full transcript and a list of segments with speaker info.
+    Requires HF_TOKEN environment variable for pyannote.audio models.
+    """
+    import whisper
+    from pyannote.audio import Pipeline as DiarizationPipeline
+    import torch
+    import torchaudio # Required by pyannote for audio loading
+    from pydub import AudioSegment # For converting various audio/video to WAV for pyannote
+    import tempfile
+
+    logger.info(f"Starting transcription and diarization for: {file_path}")
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    logger.info(f"Using device: {device}")
+
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        logger.warning("HF_TOKEN environment variable not set. Speaker diarization might fail if model requires auth.")
+        # Some pyannote models might work without it, but many require agreement/token.
+
+    # Create a temporary WAV file for diarization, as pyannote works best with WAV
+    # and Whisper can handle more formats directly.
+    temp_wav_file = None
+    try:
+        # 1. Convert input to WAV for pyannote using pydub
+        audio_input = AudioSegment.from_file(file_path)
+        # Create a named temporary file with .wav suffix
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+            temp_wav_file = tmp_wav.name
+        audio_input.export(temp_wav_file, format="wav")
+        logger.info(f"Converted {file_path} to temporary WAV: {temp_wav_file}")
+
+
+        # 2. Speaker Diarization with pyannote.audio
+        diarization_pipeline = None
+        diarization_result = None
+        try:
+            # Using a common diarization pipeline from pyannote
+            # This specific model might require accepting terms on Hugging Face Hub
+            diarization_pipeline = DiarizationPipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1", # Updated model
+                use_auth_token=hf_token # Token can be True to use cached token or the string token itself
+            )
+            if device == "cuda": diarization_pipeline.to(torch.device("cuda"))
+
+            logger.info(f"Running speaker diarization on {temp_wav_file}...")
+            # Diarization pipeline expects a dict with 'uri' and 'audio' (path)
+            diarization_input = {"uri": os.path.basename(file_path), "audio": temp_wav_file}
+            diarization_result = diarization_pipeline(diarization_input)
+            logger.info(f"Diarization complete for {file_path}.")
+        except Exception as e_diarize:
+            logger.error(f"Speaker diarization failed for {file_path}: {e_diarize}. Proceeding with transcription only.")
+            diarization_result = None # Ensure it's None if diarization fails
+
+        # 3. Transcription with Whisper
+        logger.info(f"Loading Whisper model: {whisper_model_name}")
+        model = whisper.load_model(whisper_model_name, device=device)
+        logger.info(f"Transcribing {file_path} with Whisper...")
+        # Whisper can often handle the original file path directly
+        transcription_result = model.transcribe(file_path, verbose=False) # verbose=False for cleaner logs
+        full_transcript = transcription_result["text"]
+        segments = transcription_result["segments"] # List of dicts with 'start', 'end', 'text'
+        logger.info(f"Transcription complete for {file_path}.")
+
+        # 4. Align transcription with diarization (if diarization was successful)
+        # This is a complex step. A common approach is to map each transcribed segment
+        # to the speaker who was most active during that segment's timeframe.
+        output_segments = []
+        if diarization_result:
+            logger.info("Aligning transcription with speaker diarization...")
+            for seg in segments:
+                start_time = seg["start"]
+                end_time = seg["end"]
+                segment_text = seg["text"]
+
+                # Find speaker for this segment's midpoint or majority overlap
+                # This is a simplified alignment; more advanced methods exist.
+                mid_time = (start_time + end_time) / 2
+                active_speaker = "UNKNOWN_SPEAKER"
+
+                # Iterate through pyannote's speaker turns
+                for turn, _, speaker_label in diarization_result.itertracks(yield_label=True):
+                    if turn.start <= mid_time < turn.end:
+                        active_speaker = speaker_label
+                        break
+                output_segments.append({
+                    "start": start_time,
+                    "end": end_time,
+                    "speaker": active_speaker,
+                    "text": segment_text.strip()
+                })
+            logger.info("Alignment complete.")
+        else: # No diarization, just return Whisper segments
+            for seg in segments:
+                output_segments.append({
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "speaker": "UNKNOWN_SPEAKER", # Default if no diarization
+                    "text": seg["text"].strip()
+                })
+
+        # Construct a readable combined transcript with speaker labels
+        combined_transcript_with_speakers = ""
+        current_speaker = None
+        for seg_info in output_segments:
+            if current_speaker != seg_info["speaker"]:
+                if combined_transcript_with_speakers: combined_transcript_with_speakers += "\n"
+                combined_transcript_with_speakers += f"[{seg_info['speaker']}] "
+                current_speaker = seg_info["speaker"]
+            combined_transcript_with_speakers += seg_info["text"] + " "
+
+        final_text_output = combined_transcript_with_speakers.strip()
+        if not final_text_output: # Fallback if alignment produced nothing but full transcript exists
+            final_text_output = f"[UNKNOWN_SPEAKER] {full_transcript}"
+
+
+        return {
+            "full_transcript": full_transcript,
+            "transcript_with_speakers": final_text_output,
+            "segments": output_segments,
+            "language": transcription_result.get("language", "unknown")
+        }
+
+    except ImportError as e:
+        logger.error(f"Missing libraries for audio/video processing ({file_path}): {e}. Please install openai-whisper, pyannote.audio, torch, torchaudio, and pydub.")
+        return {"error": f"Missing libraries: {e}"}
+    except Exception as e:
+        logger.error(f"Error processing audio/video file {file_path}: {e}", exc_info=True)
+        return {"error": str(e)}
+    finally:
+        if temp_wav_file and os.path.exists(temp_wav_file):
+            try:
+                os.remove(temp_wav_file)
+                logger.info(f"Cleaned up temporary WAV file: {temp_wav_file}")
+            except Exception as e_clean:
+                logger.error(f"Error cleaning up temp WAV file {temp_wav_file}: {e_clean}")
+
 
 def identify_speakers(file_path: str) -> str:
-    """Placeholder for speaker identification."""
-    logger.warning(f"Speaker identification for {file_path} is a placeholder.")
-    # Requires advanced libraries like pyannote.audio
-    return f"Speaker diarization for {os.path.basename(file_path)} (Placeholder)"
+    """
+    DEPRECATED: Speaker identification is now integrated into transcribe_audio_video.
+    This function is kept for placeholder compatibility but should not be used directly.
+    """
+    logger.warning("identify_speakers is deprecated. Use transcribe_audio_video which includes diarization.")
+    # For demonstration, if you needed just diarization (though it's usually paired with transcription):
+    # from pyannote.audio import Pipeline
+    # hf_token = os.environ.get("HF_TOKEN")
+    # pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization@2.1", use_auth_token=hf_token)
+    # diarization = pipeline(file_path)
+    # output = ""
+    # for turn, _, speaker in diarization.itertracks(yield_label=True):
+    #     output += f"Speaker {speaker} from {turn.start:.1f}s to {turn.end:.1f}s.\n"
+    # return output if output else "No speaker diarization data."
+    return f"Speaker diarization for {os.path.basename(file_path)} (Placeholder - functionality moved to transcribe_audio_video)"
 
 # --- Advanced PDF feature placeholders ---
 def extract_tables_from_pdf(file_path: str) -> str:
-    """Placeholder for table extraction from PDF."""
-    logger.warning(f"Table extraction from PDF {file_path} is a placeholder. Consider libraries like camelot-py or tabula-py.")
-    # import camelot
-    # tables = camelot.read_pdf(file_path, pages='all')
-    # content = []
-    # for i, table in enumerate(tables):
-    #     content.append(f"Table {i+1}:\n{table.df.to_string()}")
-    # return "\n\n".join(content)
-    return f"Tables from PDF {os.path.basename(file_path)} (Placeholder)"
+    """
+    Extracts tables from a PDF file using camelot-py.
+    Returns a string representation of the extracted tables (e.g., Markdown or CSV).
+    """
+    try:
+        import camelot
+        logger.info(f"Attempting table extraction from PDF: {file_path} using Camelot.")
+        # Process all pages. 'lattice' is good for tables with clear grid lines.
+        # 'stream' can be used for tables without clear lines but might be less accurate.
+        tables = camelot.read_pdf(file_path, pages='all', flavor='lattice', suppress_stdout=True)
+
+        if not tables or tables.n == 0:
+            logger.info(f"No tables found by Camelot (lattice) in {file_path}. Trying 'stream' strategy.")
+            tables = camelot.read_pdf(file_path, pages='all', flavor='stream', suppress_stdout=True)
+
+        if not tables or tables.n == 0:
+            logger.info(f"No tables found by Camelot in {file_path} with either strategy.")
+            return ""
+
+        all_tables_text = [f"\n\n--- Extracted Table {i+1} (Page {table.page}) ---\n"]
+        for i, table in enumerate(tables):
+            # Choose a representation for the table, e.g., Markdown or CSV
+            # Markdown is often more human-readable in a text dump.
+            try:
+                # Ensure headers are sensible if possible
+                df = table.df
+                # A simple heuristic: if first row looks like headers (more strings, less numbers)
+                # This is very basic, proper header detection is complex.
+                # For now, just use default to_markdown behavior.
+                table_markdown = df.to_markdown(index=False)
+                all_tables_text.append(table_markdown)
+                logger.info(f"Extracted table {i+1} from page {table.page} of {file_path} (Accuracy: {table.accuracy:.2f}%).")
+            except Exception as e_df:
+                logger.warning(f"Could not convert table {i+1} from {file_path} to markdown: {e_df}")
+                all_tables_text.append(f"[Could not parse table {i+1} data from page {table.page}]")
+
+        return "\n".join(all_tables_text)
+
+    except ImportError:
+        logger.error("camelot-py library is not installed. Cannot extract tables from PDF.")
+        return "Error: camelot-py library not installed for PDF table extraction."
+    except Exception as e:
+        # Camelot can sometimes fail on complex PDFs or if Ghostscript is not properly installed.
+        logger.error(f"Error during table extraction from PDF {file_path} with Camelot: {e}")
+        return f"Error extracting tables from {os.path.basename(file_path)}: {e}"
 
 def recognize_charts_from_pdf(file_path: str) -> str:
     """Placeholder for chart recognition from PDF."""

@@ -41,6 +41,16 @@ except ImportError as e:
     logger.warning(f"Could not import format_handlers, some specific format processing might be unavailable: {e}")
     format_handlers = None # Ensure it exists even if import fails
 
+# Import Enhancers
+try:
+    from Scripts.enhancers.chunk_optimizer import ChunkOptimizer, ChunkConfig
+    from Scripts.enhancers.metadata_extractor import MetadataExtractor, MetadataConfig
+except ImportError as e:
+    logger.error(f"Could not import enhancer modules: {e}. Advanced chunking/metadata will be affected.")
+    ChunkOptimizer, ChunkConfig = None, None
+    MetadataExtractor, MetadataConfig = None, None
+
+
 @dataclass
 class ProcessingConfig:
     """Configuration for document processing"""
@@ -129,10 +139,41 @@ class DocumentProcessor:
         # Initialize image processing if OCR is enabled
         if self.config.ocr_enabled:
             try:
-                pytesseract.get_tesseract_version()
-            except:
-                logger.warning("Tesseract not found. OCR functionality will be disabled.")
-                self.config.ocr_enabled = False
+                pytesseract.get_tesseract_version() # Basic check for Tesseract
+                # Initialize the advanced ImageProcessor if OCR is generally enabled
+                from Scripts.enhancers.image_processor import ImageProcessor, OCRConfig # Import here
+                # TODO: Pass OCRConfig from DocumentProcessor's main config if needed
+                self.image_processor_instance = ImageProcessor(OCRConfig(language='eng')) # Example config
+                logger.info("Advanced ImageProcessor initialized for DocumentProcessor.")
+            except ImportError:
+                logger.error("Could not import ImageProcessor from Scripts.enhancers.image_processor. Advanced image OCR will be limited.")
+                self.image_processor_instance = None
+            except Exception as e_tess: # Catch Tesseract specific error
+                logger.warning(f"Tesseract not found or configured: {e_tess}. OCR functionality will be limited/disabled.")
+                self.config.ocr_enabled = False # Disable if Tesseract itself is the issue
+                self.image_processor_instance = None
+
+        # Initialize Enhancers if available
+        if ChunkOptimizer and ChunkConfig:
+            # TODO: Map ProcessingConfig to ChunkConfig more directly if needed
+            self.chunk_optimizer_instance = ChunkOptimizer(ChunkConfig(
+                min_chunk_size=self.config.chunk_size // 2, # Example mapping
+                target_chunk_size=self.config.chunk_size,
+                overlap_size=self.config.chunk_overlap
+            ))
+            logger.info("ChunkOptimizer initialized.")
+        else:
+            self.chunk_optimizer_instance = None
+            logger.warning("ChunkOptimizer not available/initialized. Using basic chunking.")
+
+        if MetadataExtractor and MetadataConfig:
+            # TODO: Map ProcessingConfig to MetadataConfig
+            self.metadata_extractor_instance = MetadataExtractor(MetadataConfig())
+            logger.info("MetadataExtractor initialized.")
+        else:
+            self.metadata_extractor_instance = None
+            logger.warning("MetadataExtractor not available/initialized. Using basic metadata extraction.")
+
 
     def process_document(self, file_path: Union[str, Path]) -> List[Dict[str, Any]]:
         """Process a single document and return chunks with metadata."""
@@ -234,11 +275,21 @@ class DocumentProcessor:
             logger.info(f"No content extracted or content became empty after cleaning for {file_path}.")
             return []
             
-            # Extract metadata
-            base_metadata = self._extract_metadata(cleaned_content, file_path) # Use cleaned_content for metadata
+            # Extract metadata using the new MetadataExtractor instance
+            if self.metadata_extractor_instance:
+                base_metadata = self.metadata_extractor_instance.extract_metadata(str(file_path))
+                # If content-specific metadata is desired from the extractor:
+                # content_analysis_meta = self.metadata_extractor_instance._analyze_content(cleaned_content) # _analyze_content is protected
+                # base_metadata.update(content_analysis_meta) # Need to make _analyze_content public or have a public wrapper
+                # For now, extract_metadata(file_path) gets file stats and calls _analyze_content internally if configured.
+            else: # Fallback to old method
+                base_metadata = self._extract_metadata(cleaned_content, file_path)
             
-            # Split into chunks
-            chunks = self._chunk_text(cleaned_content) # Use cleaned_content for chunking
+            # Split into chunks using the new ChunkOptimizer instance
+            if self.chunk_optimizer_instance:
+                chunks = self.chunk_optimizer_instance.split_into_chunks(cleaned_content)
+            else: # Fallback to old method
+                chunks = self._chunk_text(cleaned_content)
             
             # Create chunk documents with metadata
             chunk_docs = []
@@ -348,6 +399,33 @@ class DocumentProcessor:
             except:
                 metadata['language'] = 'unknown'
 
+        if self.metadata_extractor_instance:
+            logger.debug("Delegating metadata extraction to MetadataExtractor instance.")
+            # The MetadataExtractor.extract_metadata expects a file_path.
+            # It can also do content analysis if its config allows and _extract_text_content is called by it.
+            # For this specific call signature, we might need to adjust how MetadataExtractor is used
+            # or make its _analyze_content method public if we want to call it with pre-cleaned text.
+            # For now, let's assume the main call in process_document uses the file_path version.
+            # This fallback _extract_metadata is now more of a basic content stats calculator.
+            pass # Primary logic moved to process_document calling self.metadata_extractor_instance
+
+        # Fallback/Original basic metadata logic if extractor not present or if called directly:
+        metadata = {
+            'source': str(file_path), # file_path is Path object
+            'file_type': file_path.suffix.lower(),
+            'file_size': file_path.stat().st_size if file_path.exists() else 0, # Check exists
+            'created_at': file_path.stat().st_ctime if file_path.exists() else 0,
+            'modified_at': file_path.stat().st_mtime if file_path.exists() else 0,
+            'hash': hashlib.md5(text.encode()).hexdigest(),
+            'char_count': len(text),
+            'word_count': len(text.split()),
+            'file_name': file_path.name
+        }
+        if self.config.language_detection and text.strip():
+            try:
+                metadata['language'] = detect(text)
+            except:
+                metadata['language'] = 'unknown'
         return metadata
 
     def _extract_images_from_pdf(self, pdf_path: Path) -> List[str]:
@@ -368,17 +446,37 @@ class DocumentProcessor:
         return texts
 
     def _process_image(self, file_path: Path) -> str:
-        """Process image files with OCR"""
+        """Process image files with OCR using the advanced ImageProcessor."""
         if not self.config.ocr_enabled:
+            logger.info(f"OCR disabled, skipping image processing for {file_path}.")
             return ""
 
-        try:
-            img = Image.open(file_path)
-            text = pytesseract.image_to_string(img)
-            return self._clean_text(text)
-        except Exception as e:
-            logger.warning(f"Error processing image {file_path}: {str(e)}")
-            return ""
+        if hasattr(self, 'image_processor_instance') and self.image_processor_instance:
+            try:
+                # ImageProcessor.process_single_image expects a path and returns text
+                # It internally uses extract_text_from_image which handles PIL Image objects
+                text = self.image_processor_instance.process_single_image(str(file_path))
+                return self._clean_text(text) # Clean the OCR'd text
+            except Exception as e:
+                logger.error(f"Advanced image processing failed for {file_path} using ImageProcessor: {e}. Falling back to basic OCR.")
+                # Fallback to basic tesseract if advanced processor fails for some reason
+                try:
+                    img = Image.open(file_path)
+                    text = pytesseract.image_to_string(img)
+                    return self._clean_text(text)
+                except Exception as e_basic:
+                    logger.warning(f"Basic OCR also failed for image {file_path}: {e_basic}")
+                    return ""
+        else:
+            # Fallback to basic tesseract if ImageProcessor wasn't initialized
+            logger.warning(f"ImageProcessor not available. Using basic Tesseract OCR for {file_path}.")
+            try:
+                img = Image.open(file_path)
+                text = pytesseract.image_to_string(img)
+                return self._clean_text(text)
+            except Exception as e:
+                logger.warning(f"Error processing image {file_path} with basic Tesseract: {str(e)}")
+                return ""
 
     def _deduplicate_chunks(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Remove near-duplicate chunks using TF-IDF similarity"""
@@ -408,64 +506,81 @@ class DocumentProcessor:
         return unique_chunks
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Split text into chunks with overlap while preserving semantic boundaries"""
+        """
+        Split text into chunks. Delegates to ChunkOptimizer if available,
+        otherwise uses original basic logic.
+        """
+        if self.chunk_optimizer_instance:
+            logger.debug("Delegating chunking to ChunkOptimizer instance.")
+            return self.chunk_optimizer_instance.split_into_chunks(text)
+
+        # Fallback/Original basic chunking logic:
+        logger.debug("Using basic _chunk_text logic as ChunkOptimizer is not available.")
         if not text:
             return []
 
         # Split into sentences first
         sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
         chunks = []
-        current_chunk = []
+        current_chunk_text = [] # Changed to list of strings (sentences)
         current_length = 0
 
         for sentence in sentences:
-            sentence_length = len(sentence)
+            sentence_length = len(sentence) # Approx length, actual token length might differ
             
             if current_length + sentence_length <= self.chunk_size:
-                current_chunk.append(sentence)
+                current_chunk_text.append(sentence)
                 current_length += sentence_length
             else:
-                if current_chunk:
-                    chunks.append(' '.join(current_chunk))
-                current_chunk = [sentence]
+                if current_chunk_text: # If there's anything in current_chunk_text
+                    chunks.append(' '.join(current_chunk_text))
+                current_chunk_text = [sentence] # Start new chunk with current sentence
                 current_length = sentence_length
 
-            # Handle very long sentences
-            if sentence_length > self.chunk_size:
+            # Handle very long sentences that exceed chunk_size by themselves
+            # This part of original logic might be redundant if sentence itself is > chunk_size
+            # and we are adding it to a new chunk. The ChunkOptimizer handles this better.
+            if sentence_length > self.chunk_size and not current_chunk_text: # If a single sentence is too long
+                # This simple split might break words, ChunkOptimizer is more sophisticated
                 words = sentence.split()
-                current_chunk = []
-                current_length = 0
-                temp_chunk = []
-                
+                temp_sub_chunk = []
+                temp_sub_len = 0
                 for word in words:
-                    if current_length + len(word) <= self.chunk_size:
-                        temp_chunk.append(word)
-                        current_length += len(word) + 1
+                    if temp_sub_len + len(word) <= self.chunk_size:
+                        temp_sub_chunk.append(word)
+                        temp_sub_len += len(word) + 1 # for space
                     else:
-                        if temp_chunk:
-                            chunks.append(' '.join(temp_chunk))
-                        temp_chunk = [word]
-                        current_length = len(word)
-                
-                if temp_chunk:
-                    current_chunk = temp_chunk
-                    current_length = sum(len(word) + 1 for word in temp_chunk)
+                        if temp_sub_chunk: chunks.append(' '.join(temp_sub_chunk))
+                        temp_sub_chunk = [word]
+                        temp_sub_len = len(word)
+                if temp_sub_chunk: chunks.append(' '.join(temp_sub_chunk))
+                # After processing a very long sentence, reset current_chunk_text and current_length
+                current_chunk_text = []
+                current_length = 0
 
-        if current_chunk:
-            chunks.append(' '.join(current_chunk))
 
-        # Add overlap between chunks
+        if current_chunk_text: # Add any remaining text in current_chunk_text
+            chunks.append(' '.join(current_chunk_text))
+
+        # Add overlap between chunks (original logic)
         if self.chunk_overlap > 0 and len(chunks) > 1:
-            overlapped_chunks = []
-            for i in range(len(chunks)):
-                if i > 0:
-                    words = chunks[i-1].split()
-                    overlap_words = words[-self.chunk_overlap:]
-                    chunks[i] = ' '.join(overlap_words + chunks[i].split())
-                overlapped_chunks.append(chunks[i])
-            chunks = overlapped_chunks
+            overlapped_chunks = [chunks[0]] # First chunk as is
+            for i in range(1, len(chunks)):
+                # Get words from the end of the PREVIOUS actual chunk for overlap
+                # This needs to be from the text that formed chunks[i-1]
+                # A simpler way (though not strictly sentence-preserving for overlap)
+                # is to take last N words/chars from the previous chunk string.
+                # Let's use words from previous chunk string:
+                prev_chunk_words = chunks[i-1].split()
+                # Ensure overlap size doesn't exceed available words
+                actual_overlap_word_count = min(self.chunk_overlap // 5, len(prev_chunk_words)) # Assuming avg 5 chars/word for overlap count
+
+                overlap_text_parts = prev_chunk_words[-actual_overlap_word_count:] if actual_overlap_word_count > 0 else []
+                overlapped_chunks.append(' '.join(overlap_text_parts + [chunks[i]]))
+            return overlapped_chunks
 
         return chunks
+
 
     def _process_text(self, file_path: Path) -> str:
         """Process plain text files."""
@@ -486,17 +601,44 @@ class DocumentProcessor:
                     if text.strip():
                         text_content.append(text)
                 
-                # If text extraction yielded little content, try OCR
-                if self.config.ocr_enabled and len(''.join(text_content)) < 100:
-                    logger.info(f"Attempting OCR on {file_path}")
-                    ocr_texts = self._extract_images_from_pdf(file_path)
-                    text_content.extend(ocr_texts)
-                
+                # If text extraction yielded little content, try OCR with the advanced ImageProcessor
+                # The _extract_images_from_pdf currently uses basic pytesseract.
+                # A more robust way would be for _extract_images_from_pdf to use self.image_processor_instance
+                # For now, let's keep its internal OCR logic but note this potential enhancement.
+                if self.config.ocr_enabled and len(''.join(text_content)) < 100: # Heuristic: if very little text extracted
+                    logger.info(f"Low text yield from PDF direct extraction for {file_path}. Attempting page-by-page OCR.")
+                    if hasattr(self, 'image_processor_instance') and self.image_processor_instance:
+                        # process_pdf_images returns List[Tuple[int, str]] (page_num, text)
+                        ocr_results_tuples = self.image_processor_instance.process_pdf_images(str(file_path))
+                        ocr_texts = [text for _, text in ocr_results_tuples if text.strip()]
+                        if ocr_texts:
+                             text_content.append("\n\n--- OCR Extracted Content ---")
+                             text_content.extend(ocr_texts)
+                        logger.info(f"OCR for {file_path} yielded {len(ocr_texts)} non-empty text blocks.")
+                    else: # Fallback if advanced image_processor not available
+                        legacy_ocr_texts = self._extract_images_from_pdf(file_path) # Uses old method
+                        if legacy_ocr_texts:
+                            text_content.append("\n\n--- OCR Extracted Content (Legacy) ---")
+                            text_content.extend(legacy_ocr_texts)
+
+            # Attempt to extract tables using format_handlers
+            if format_handlers and hasattr(format_handlers, 'extract_tables_from_pdf'):
+                extracted_tables_text = format_handlers.extract_tables_from_pdf(str(file_path))
+                if extracted_tables_text.strip():
+                    text_content.append(extracted_tables_text) # Appends the formatted string of tables
+                    logger.info(f"Successfully extracted table data from {file_path}.")
+
+            # Placeholder for chart recognition - would be similar call
+            # if format_handlers and hasattr(format_handlers, 'recognize_charts_from_pdf'):
+            #     chart_data_text = format_handlers.recognize_charts_from_pdf(str(file_path))
+            #     if chart_data_text.strip():
+            #         text_content.append(chart_data_text)
+
         except Exception as e:
             logger.error(f"Error processing PDF {file_path}: {str(e)}")
-            raise
+            raise # Re-raise to be handled by the main processing loop
             
-        return '\n\n'.join(text_content)
+        return '\n\n'.join(text_content) # Join all collected text pieces
 
     def _ocr_pdf(self, file_path: Path) -> str:
         """Perform OCR on PDF file and return extracted text."""
@@ -542,12 +684,42 @@ class DocumentProcessor:
             #         return True
 
             # Add more checks here, e.g., magic number validation against extension
-            # import magic
-            # try:
-            #     mime_type = magic.from_file(str(file_path), mime=True)
-            #     # Compare mime_type with expected based on extension
-            # except Exception:
-            #     pass # magic might not be available or fail
+            # MIME type validation against extension
+            try:
+                import magic
+                detected_mime = magic.from_file(str(file_path), mime=True)
+                extension = file_path.suffix.lower()
+                # This is a basic check; a more comprehensive mapping would be needed.
+                # For example, .docx can be application/vnd.openxmlformats-officedocument.wordprocessingml.document
+                # or application/zip if it's just a zip file renamed.
+                expected_mime_start = {
+                    ".pdf": "application/pdf",
+                    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    ".txt": "text/plain",
+                    ".jpg": "image/jpeg",
+                    ".png": "image/png",
+                    ".zip": "application/zip",
+                    ".tar": "application/x-tar",
+                    # Add more common types
+                }
+                if extension in expected_mime_start and not detected_mime.startswith(expected_mime_start[extension]):
+                    # Stricter check for exact match might be too brittle for some formats (e.g. docx)
+                    # if extension in expected_mime_start and detected_mime != expected_mime_start[extension]:
+                    logger.warning(f"File {file_path} has extension {extension} but MIME type is {detected_mime}. Potential mismatch/corruption.")
+                    # Depending on policy, this could return True
+            except ImportError:
+                logger.debug("python-magic library not found, skipping MIME type validation.")
+            except Exception as e_magic:
+                logger.warning(f"MIME type detection failed for {file_path}: {e_magic}")
+
+
+            # Placeholder for actual malware scanning integration (for archives primarily)
+            if format_handlers and hasattr(format_handlers, 'scan_for_malware'):
+                 # Only scan archives or executables, etc. For simplicity, let's assume archives here.
+                if file_path.suffix.lower() in ['.zip', '.tar', '.gz', '.rar', '.7z']: # Add more as supported
+                    if format_handlers.scan_for_malware(str(file_path)):
+                        logger.warning(f"Malware scan (placeholder) flagged {file_path} as potentially malicious.")
+                        return True
 
         except Exception as e:
             logger.error(f"Error during file validation for {file_path}: {e}")
@@ -776,15 +948,39 @@ class DocumentProcessor:
         return self._process_image(file_path) # Fallback to generic image OCR if Pillow can open it
 
     def _process_audio_video_placeholder(self, file_path: Path) -> str:
-        """Placeholder for audio/video processing."""
+        """Processes audio/video files using transcription and diarization handler."""
         if format_handlers and hasattr(format_handlers, 'transcribe_audio_video'):
-            text = format_handlers.transcribe_audio_video(str(file_path))
-            # Placeholder for speaker identification - would append to text or add to metadata
-            # speaker_info = format_handlers.identify_speakers(str(file_path))
-            # text += f"\n\n{speaker_info}"
-            return text
-        logger.warning(f"Audio/Video processing handler not available for {file_path}.")
-        return f"Audio/Video content from {file_path.name} (Placeholder)"
+            try:
+                # Call the handler which now returns a dictionary
+                transcription_data = format_handlers.transcribe_audio_video(str(file_path))
+
+                if isinstance(transcription_data, dict):
+                    if "error" in transcription_data:
+                        logger.error(f"Error during audio/video processing for {file_path}: {transcription_data['error']}")
+                        return f"Error processing audio/video {file_path.name}: {transcription_data['error']}"
+
+                    # For now, return the transcript with speaker labels as the main text content
+                    # Other data like 'full_transcript', 'segments', 'language' could be
+                    # stored in metadata by the main process_document if needed.
+                    text_with_speakers = transcription_data.get("transcript_with_speakers", "")
+                    if not text_with_speakers: # Fallback if transcript_with_speakers is empty
+                        text_with_speakers = transcription_data.get("full_transcript", "")
+
+                    if not text_with_speakers.strip():
+                         logger.warning(f"Audio/Video processing for {file_path} resulted in empty transcript.")
+                         return f"Empty transcript from {file_path.name}"
+                    return text_with_speakers
+                else:
+                    # This case should ideally not happen if transcribe_audio_video always returns a dict
+                    logger.error(f"Audio/Video handler for {file_path} returned unexpected type: {type(transcription_data)}. Expected dict.")
+                    return f"Unexpected output from audio/video processing of {file_path.name}"
+
+            except Exception as e:
+                logger.error(f"Exception calling audio/video handler for {file_path}: {e}", exc_info=True)
+                return f"Failed to process audio/video {file_path.name} due to: {e}"
+
+        logger.warning(f"Audio/Video processing handler not available or misconfigured for {file_path}.")
+        return f"Audio/Video content from {file_path.name} (Processing Handler Not Available)"
 
     def _process_archive(self, file_path: Path) -> str:
         """

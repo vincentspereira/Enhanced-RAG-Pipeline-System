@@ -19,7 +19,26 @@ class OrchestratorAgent(Agent):
         self.register_capability("task_orchestration")
         self.register_capability("workflow_management")
         self.register_message_handler("EXECUTE_WORKFLOW", self._handle_execute_workflow)
+        self.register_message_handler("SHARED_INSIGHT", self._handle_shared_insight) # New Handler
         self.active_workflows: Dict[str, Any] = {} # workflow_id -> state
+        self.strategic_insights: Dict[str, Any] = {} # To store received insights
+
+    async def _handle_shared_insight(self, message: Message):
+        """Handles shared insights from LearningAgent or other sources."""
+        insight_key = message.content.get("insight_key")
+        insight_value = message.content.get("insight_value")
+        source_agent = message.content.get("source_agent", message.sender_id)
+
+        if insight_key:
+            logger.info(f"{self.agent_name} received insight '{insight_key}' = '{insight_value}' from {source_agent}.")
+            self.strategic_insights[insight_key] = insight_value
+            # Placeholder: Agent might adjust its workflow strategies based on this insight
+            # For example, if "most_frequent_successful_task_type" is "research",
+            # it might prioritize assigning tasks to ResearchAgents or adjust workflow paths.
+            self.update_knowledge(f"insight_{insight_key}", insight_value) # Store in general KB too
+        else:
+            logger.warning(f"{self.agent_name} received a SHARED_INSIGHT message without an 'insight_key'.")
+
 
     async def _handle_execute_workflow(self, message: Message):
         workflow_definition = message.content.get("workflow")
@@ -202,11 +221,52 @@ class LearningAgent(Agent):
     async def analyze_interactions_and_share_insights(self):
         # Placeholder for actual learning logic
         logger.info(f"{self.agent_name} analyzing {len(self.interaction_logs)} interactions.")
-        # Example: identify common failure patterns, successful strategies, etc.
-        # Share insights with other relevant agents (e.g., Orchestrator, Coordinator)
-        # For now, this is conceptual.
-        await asyncio.sleep(1) # Simulate analysis
-        logger.info("Interaction analysis complete. Insights shared (conceptually).")
+        if not self.interaction_logs:
+            logger.info(f"{self.agent_name}: No interactions to analyze.")
+            return
+
+        # Example: Identify the most common task type that succeeded
+        successful_task_types = [
+            log.get("details", {}).get("task_type", "unknown")
+            for log in self.interaction_logs
+            if log.get("status") == "completed" and log.get("details")
+        ]
+        if not successful_task_types:
+            logger.info(f"{self.agent_name}: No successful tasks found in logs to derive insights.")
+            return
+
+        from collections import Counter
+        common_success = Counter(successful_task_types).most_common(1)
+
+        insight_key = "most_frequent_successful_task_type"
+        insight_value = common_success[0][0] if common_success else "N/A"
+
+        logger.info(f"{self.agent_name} derived insight: {insight_key} = {insight_value}")
+
+        # Share this insight with other agents (e.g., OrchestratorAgents)
+        if self.network and hasattr(self.network, 'agents'):
+            orchestrators = [
+                agent_id for agent_id, agent_instance in self.network.agents.items()
+                if isinstance(agent_instance, OrchestratorAgent)
+            ]
+            if not orchestrators:
+                logger.info(f"{self.agent_name}: No OrchestratorAgents found to share insight with.")
+
+            for orch_id in orchestrators:
+                logger.info(f"{self.agent_name} sending insight '{insight_key}' to Orchestrator {orch_id}")
+                # Using a specific message type for insights
+                await self.send_message_to_network(
+                    recipient_agent_id=orch_id,
+                    message_type="SHARED_INSIGHT",
+                    message_content={"insight_key": insight_key, "insight_value": insight_value, "source_agent": self.agent_id}
+                )
+        else:
+            logger.warning(f"{self.agent_name} has no network reference or network has no agents list; cannot share insights.")
+
+        # Clear logs after analysis (optional, depends on desired behavior)
+        # self.interaction_logs.clear()
+        await asyncio.sleep(0.1) # Simulate sharing
+        logger.info(f"{self.agent_name}: Interaction analysis and insight sharing attempt complete.")
 
 
 # --- New Agent Types from Requirements ---

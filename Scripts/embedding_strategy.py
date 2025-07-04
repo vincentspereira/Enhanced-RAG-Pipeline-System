@@ -128,41 +128,99 @@ class EmbeddingStrategyManager:
         # 1. Generate full embeddings
         # 2. Apply compression technique (e.g., PCA, Matryoshka Embeddings, quantization)
         # return compressed_embeddings_np
-        raise NotImplementedError("Embedding compression not implemented.")
+        # embeddings = await provider.generate_embeddings(texts) # This needs to be async if provider is
+        # embeddings_np = np.array(embeddings)
+        # 1. Generate full embeddings
+        # 2. Apply compression technique (e.g., PCA, Matryoshka Embeddings, quantization)
+        # return compressed_embeddings_np
+        # This method should likely be async if provider.generate_embeddings is async
+        raise NotImplementedError("Embedding compression not fully implemented yet. Use `_apply_compression` as a utility.")
 
-    def get_fine_tuned_embedding_provider(self, model_id: str, base_provider_info: EmbeddingModelMeta) -> EmbeddingProvider:
+    async def _apply_compression(self, embeddings: List[List[float]], technique: str = "scalar_quantization_int8", **kwargs) -> List[List[Any]]: # Output type might change
         """
-        Loads a fine-tuned embedding model.
-        The 'model_id' could be a path to a local fine-tuned SentenceTransformer model,
-        or an identifier in a model registry.
+        Applies a specified compression technique to the given embeddings.
+        Placeholder for actual compression logic.
         """
-        logger.warning(f"Fine-tuned embedding model loading for '{model_id}' is a placeholder.")
-        # This would involve:
-        # 1. Looking up model_id in a registry (e.g., the main ModelRegistry from RAFT system)
-        # 2. Determining its type (e.g. local SentenceTransformer path)
-        # 3. Instantiating an EmbeddingProvider, possibly a generic HuggingFace one,
-        #    pointing to this local model path.
-        # For now, create a new provider instance based on base_provider_info but override model name
+        if not embeddings:
+            return []
 
-        provider_key = f"{base_provider_info.provider_name}_finetuned_{model_id.replace('/', '_')}"
+        logger.info(f"Applying '{technique}' compression to {len(embeddings)} embeddings. (Placeholder)")
+
+        if technique == "scalar_quantization_int8":
+            # Example: Convert to NumPy array, scale to [-127, 127], convert to int8
+            # This is a very basic form of scalar quantization.
+            # Proper implementation needs careful handling of scales/offsets per dimension or globally.
+            compressed_embeddings = []
+            for emb in embeddings:
+                arr = np.array(emb)
+                # Simple min-max scaling for demonstration. Real implementation needs robust scaling.
+                min_val, max_val = arr.min(), arr.max()
+                if max_val == min_val: # Avoid division by zero if flat
+                    scaled_arr = np.zeros_like(arr, dtype=np.int8)
+                else:
+                    # Scale to [0, 255] then shift to [-127, 127] approx (or use symmetric range)
+                    scaled_arr = 255 * (arr - min_val) / (max_val - min_val)
+                    quantized_arr = np.round(scaled_arr).astype(np.int8) # Example, not precise for -127 to 127
+                    # Store min_val, max_val as well for dequantization
+                    # For now, just returning the int8 array
+                    compressed_embeddings.append(quantized_arr.tolist())
+            return compressed_embeddings # List of lists of int8
+        elif technique == "pca":
+            # target_dim = kwargs.get("target_dim", 128)
+            # from sklearn.decomposition import PCA
+            # pca = PCA(n_components=target_dim)
+            # compressed_embeddings_np = pca.fit_transform(np.array(embeddings))
+            # return compressed_embeddings_np.tolist()
+            logger.warning("PCA compression is a placeholder and not fully implemented.")
+            return embeddings # Return original for now
+        else:
+            logger.warning(f"Unknown compression technique: {technique}. Returning original embeddings.")
+            return embeddings # Return original embeddings if technique is unknown
+
+    def get_fine_tuned_embedding_provider(self, model_path_or_id: str, original_model_meta: Optional[EmbeddingModelMeta] = None) -> EmbeddingProvider:
+        """
+        Loads a fine-tuned embedding model, typically a local SentenceTransformer model.
+
+        Args:
+            model_path_or_id: Path to the local fine-tuned model directory or a registered ID
+                              that resolves to such a path.
+            original_model_meta: Optional metadata of the base model that was fine-tuned.
+                                 Used for fallbacks or if some provider_kwargs are needed.
+        Returns:
+            An initialized EmbeddingProvider for the fine-tuned model.
+        """
+        # Construct a unique key for caching this provider instance
+        # Sanitize model_path_or_id for use in key, e.g., replace slashes
+        sanitized_model_id = model_path_or_id.replace('/', '_').replace('\\', '_')
+        provider_key = f"local_hf_finetuned_{sanitized_model_id}"
+
         if provider_key not in self.providers:
-            logger.info(f"Initializing fine-tuned provider: {provider_key} (path/id: {model_id})")
+            logger.info(f"Initializing fine-tuned embedding provider from path/ID: {model_path_or_id}")
 
-            # This assumes fine-tuned models are SentenceTransformer compatible
-            # and can be loaded by a generic HuggingFace local provider.
-            # We might need a specific "local_hf" provider type in create_embedding_provider.
+            # Default provider_kwargs from original model if available, or empty dict
+            provider_kwargs = original_model_meta.provider_kwargs.copy() if original_model_meta and original_model_meta.provider_kwargs else {}
 
-            # Example: if base_provider_info.provider_name was 'huggingface_local'
-            # or if we add such a provider type that just takes a path.
+            # Assuming the fine-tuned model is a local SentenceTransformer model,
+            # we use the "local_hf" provider type.
+            # The 'model_path' argument for LocalHuggingFaceEmbeddings is crucial.
             try:
                 self.providers[provider_key] = create_embedding_provider(
-                    provider=base_provider_info.provider_name, # Or a specific "local_finetuned_transformer" provider
-                    model=model_id, # This would be the path to the fine-tuned model
-                    **(base_provider_info.provider_kwargs or {})
+                    provider="local_hf",
+                    model_path=model_path_or_id, # Pass the path directly
+                    **provider_kwargs # Pass other relevant args like batch_size, device
                 )
-            except ValueError as e: # If provider type doesn't support direct path model like this
-                 logger.error(f"Could not create provider for fine-tuned model {model_id} based on {base_provider_info.provider_name}: {e}")
-                 raise # Or return a default
+                logger.info(f"Successfully initialized fine-tuned provider '{provider_key}' for model at '{model_path_or_id}'.")
+            except Exception as e:
+                logger.error(f"Failed to create provider for fine-tuned model at '{model_path_or_id}': {e}")
+                # Optionally, could fall back to the original base model provider if original_model_meta is provided
+                if original_model_meta:
+                    logger.warning(f"Falling back to original model provider for {original_model_meta.provider_name}/{original_model_meta.model_name}")
+                    return self.get_embedding_provider({
+                        "provider_name": original_model_meta.provider_name,
+                        "model_name": original_model_meta.model_name
+                    })
+                raise # Re-raise if no fallback
+
         return self.providers[provider_key]
 
 # Example Usage:

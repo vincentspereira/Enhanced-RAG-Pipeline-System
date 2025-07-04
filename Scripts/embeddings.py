@@ -364,6 +364,46 @@ class JinaAIEmbeddings(EmbeddingProvider):
                 self._dim_cache = 768
         return self._dim_cache
 
+class LocalHuggingFaceEmbeddings(EmbeddingProvider):
+    """Embeddings using local HuggingFace SentenceTransformer models."""
+
+    def __init__(self, model_path: str, batch_size: int = 32, device: Optional[str] = None):
+        from sentence_transformers import SentenceTransformer # Import here to keep it optional
+        self.model_path = model_path
+        self.batch_size = batch_size
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            self.model = SentenceTransformer(model_path, device=self.device)
+            self._dim_cache = self.model.get_sentence_embedding_dimension()
+            logger.info(f"Loaded local SentenceTransformer model from: {model_path} on device {self.device}. Dim: {self._dim_cache}")
+        except Exception as e:
+            logger.error(f"Failed to load local SentenceTransformer model from {model_path}: {e}")
+            raise
+
+    async def generate_embeddings(self, texts: Union[str, List[str]], **kwargs) -> List[List[float]]:
+        if isinstance(texts, str):
+            texts = [texts]
+
+        # SentenceTransformer.encode is not async, run in executor or ensure it's okay in current event loop.
+        # For simplicity here, direct call. In a heavy async app, use asyncio.to_thread
+        # For batching, SentenceTransformer handles it internally if a list is passed.
+        # The `batch_size` in `encode` is for internal processing, not API batching like OpenAI/Cohere.
+        try:
+            # Normalize to numpy array then to list of lists
+            embeddings_np = self.model.encode(texts, batch_size=self.batch_size, show_progress_bar=False)
+            return embeddings_np.tolist()
+        except Exception as e:
+            logger.error(f"Error generating embeddings with local model {self.model_path}: {e}")
+            # Return empty embeddings of correct dimension for failed ones
+            dim = self.get_embedding_dim()
+            return [[0.0] * dim for _ in texts]
+
+    def get_embedding_dim(self) -> int:
+        if self._dim_cache is None:
+            # This should have been set in __init__
+            raise RuntimeError("Embedding dimension not initialized for LocalHuggingFaceEmbeddings.")
+        return self._dim_cache
+
 
 def create_embedding_provider(provider: str = "ollama", **kwargs) -> EmbeddingProvider:
     """Factory function to create embedding providers.
@@ -381,13 +421,25 @@ def create_embedding_provider(provider: str = "ollama", **kwargs) -> EmbeddingPr
         "cohere": CohereEmbeddings,
         "voyage": VoyageAIEmbeddings,
         "jina": JinaAIEmbeddings,
-        # Potentially add a "huggingface_local" type here too
+        "local_hf": LocalHuggingFaceEmbeddings, # Added new provider type
     }
     
-    if provider.lower() not in providers:
+    provider_key = provider.lower()
+    if provider_key not in providers:
         raise ValueError(f"Unknown provider: {provider}. Choose from {list(providers.keys())}")
-        
-    base_provider = providers[provider.lower()](**kwargs)
+
+    # Specific argument handling for LocalHuggingFaceEmbeddings
+    # It expects 'model_path' instead of 'model' like others.
+    # We can standardize by checking kwargs or make `create_embedding_provider` smarter.
+    # For now, let's assume if provider is 'local_hf', 'model' kwarg is actually the path.
+    provider_kwargs = kwargs.copy()
+    if provider_key == "local_hf":
+        if "model" in provider_kwargs and "model_path" not in provider_kwargs:
+            provider_kwargs["model_path"] = provider_kwargs.pop("model")
+        elif "model_path" not in provider_kwargs:
+            raise ValueError("For 'local_hf' provider, 'model_path' (or 'model' as alias) must be specified in kwargs.")
+
+    base_provider = providers[provider_key](**provider_kwargs)
     
     # Wrap with caching if enabled
     if kwargs.get("enable_cache", True):

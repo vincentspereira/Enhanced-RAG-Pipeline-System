@@ -36,6 +36,7 @@ class Agent(ABC):
 
         self._task_history: List[Dict[str, Any]] = []
         self._current_tasks: Dict[str, asyncio.Task] = {} # task_id -> asyncio.Task
+        self._register_default_handlers() # Register default handlers like KNOWLEDGE_SHARE
         logger.info(f"Agent {self.agent_name} ({self.agent_id}) initialized.")
 
     @abstractmethod
@@ -125,15 +126,42 @@ class Agent(ABC):
         self.message_handlers[message_type] = handler
         logger.info(f"Agent {self.agent_name} registered handler for message type '{message_type}'.")
 
-    # --- Methods for inter-agent learning (conceptual) ---
-    def share_knowledge(self, recipient_agent: 'Agent', knowledge_key: str, knowledge_value: Any):
-        """Shares a piece of knowledge with another agent."""
-        # This would use the messaging system.
-        content = {"key": knowledge_key, "value": knowledge_value, "type": "knowledge_sharing"}
-        # await self.send_message(recipient_agent, content, "KNOWLEDGE_SHARE") # Conceptual
-        logger.info(f"{self.agent_name} attempting to share knowledge '{knowledge_key}' with {recipient_agent.agent_name}")
-        # Direct update for now, replace with messaging
-        recipient_agent.update_knowledge(knowledge_key, knowledge_value)
+    # --- Methods for inter-agent learning ---
+    async def share_knowledge_with_agent(self, recipient_agent_id: str, knowledge_key: str, knowledge_value: Any):
+        """Shares a piece of knowledge with a specific agent via the network."""
+        if not self.network:
+            logger.error(f"{self.agent_name} cannot share knowledge: no network reference.")
+            return
+
+        content = {"key": knowledge_key, "value": knowledge_value, "shared_by": self.agent_id}
+        logger.info(f"{self.agent_name} sharing knowledge '{knowledge_key}' with agent {recipient_agent_id}.")
+        await self.send_message_to_network(
+            recipient_agent_id=recipient_agent_id,
+            message_type="KNOWLEDGE_SHARE",
+            message_content=content
+        )
+
+    async def _handle_knowledge_share(self, message: Message):
+        """Handles an incoming KNOWLEDGE_SHARE message."""
+        key = message.content.get("key")
+        value = message.content.get("value")
+        shared_by = message.content.get("shared_by", message.sender_id)
+        if key:
+            self.update_knowledge(key, value)
+            logger.info(f"{self.agent_name} received and updated knowledge '{key}' from agent {shared_by}.")
+        else:
+            logger.warning(f"{self.agent_name} received KNOWLEDGE_SHARE message without a 'key'.")
+
+    # Call this in __init__ to register the handler for all agents
+    def _register_default_handlers(self):
+        self.register_message_handler("KNOWLEDGE_SHARE", self._handle_knowledge_share)
+
+    # Make sure __init__ calls _register_default_handlers
+    # Original __init__ for context:
+    # def __init__(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None, network: Optional[AgentNetwork] = None):
+    #     self.agent_id: str = agent_id or str(uuid.uuid4())
+    #     ...
+    #     self._register_default_handlers() # Add this call
 
 
     def learn_from_interaction(self, interaction_data: Dict[str, Any]):

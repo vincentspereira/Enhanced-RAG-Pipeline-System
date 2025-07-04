@@ -196,9 +196,10 @@ class AdvancedSearchSystem:
         search_type_weights: Optional[Dict[str, float]] = None,
         use_reranker: bool = False,
         query_embedding_strategy_params: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None, # Added for personalization
     ) -> List[SearchResult]:
         """
-        Performs a hybrid search with optional re-ranking and adaptive query embedding.
+        Performs a hybrid search with optional re-ranking, adaptive query embedding, and personalization.
         """
         search_type_weights = search_type_weights or {"semantic": 0.6, "keyword": 0.4, "graph": 0.0}
         current_query_embedding_strategy_params = query_embedding_strategy_params or self.default_embedding_strategy_params
@@ -269,8 +270,21 @@ class AdvancedSearchSystem:
         # 3. Graph Search (Placeholder)
         if search_type_weights.get("graph", 0.0) > 0 and self.knowledge_graph_search:
             logger.info(f"Performing graph search for: '{processed_query}' (Placeholder)")
-            # graph_results_list = self.knowledge_graph_search.search(processed_query, top_k=top_k * 2)
+            # graph_results_list = await self.knowledge_graph_search.search(processed_query, top_k=top_k * 2) # Assuming async
             pass
+
+        # 3.5 Federated Search (New Step)
+        # Determine which federated sources to query, could be based on query analysis or user settings
+        # For now, assume all configured federated sources are queried if weight > 0
+        federated_results_list: List[SearchResult] = []
+        if search_type_weights.get("federated", 0.0) > 0: # Add a new weight type
+            # TODO: Define how `active_federated_sources` are determined.
+            # Could be passed in, or configured in AdvancedSearchSystem.
+            active_federated_sources = ["external_db_1", "web_search_serpapi"] # Example
+            federated_results_list = await self._federated_search_external(processed_query, sources=active_federated_sources)
+            if federated_results_list:
+                 logger.info(f"Retrieved {len(federated_results_list)} results from federated sources.")
+
 
         # 4. Combine results using Reciprocal Rank Fusion
         all_ranked_lists = []
@@ -280,6 +294,8 @@ class AdvancedSearchSystem:
             all_ranked_lists.append(keyword_results_list)
         if graph_results_list: # If/when implemented
             all_ranked_lists.append(graph_results_list)
+        if federated_results_list: # Add federated results to fusion
+            all_ranked_lists.append(federated_results_list)
 
         if not all_ranked_lists:
             return []
@@ -298,7 +314,67 @@ class AdvancedSearchSystem:
         else:
             final_results_list = fused_results
 
+        # 6. Personalize Results (if user_id is provided)
+        if user_id:
+            final_results_list = self._personalize_results(final_results_list, user_id, processed_query)
+
         return final_results_list[:top_k]
+
+    def _personalize_results(self, results: List[SearchResult], user_id: str, query: str) -> List[SearchResult]:
+        """
+        Personalizes search results based on user profile and behavior.
+        Placeholder: This should query an Analytics Service.
+        """
+        logger.info(f"Personalizing {len(results)} results for user_id: {user_id} and query: '{query}' (Placeholder)")
+        # Mock behavior: For now, just re-sort randomly or based on a dummy factor
+        # In a real implementation:
+        # 1. Fetch user profile/preferences from Analytics Service (e.g., preferred domains, topics, past interactions)
+        # 2. Fetch user behavior for this query or similar queries (e.g., clicked docs)
+        # 3. Adjust scores:
+        #    - Boost documents matching preferences.
+        #    - Boost documents previously interacted with positively for similar queries.
+        #    - Potentially de-prioritize docs ignored in the past.
+        # Example:
+        # user_prefs = self.analytics_service.get_user_preferences(user_id)
+        # for res in results:
+        #     if res.metadata and user_prefs.get("preferred_domain") == res.metadata.get("domain"):
+        #         res.score *= 1.2 # Boost score by 20%
+        # results.sort(key=lambda x: x.score, reverse=True)
+        return results # Return as is for placeholder
+
+    async def _federated_search_external(self, query: str, sources: Optional[List[str]] = None) -> List[SearchResult]:
+        """
+        Performs search across external federated sources.
+        Placeholder: This should use a plugin architecture for connectors.
+        """
+        logger.info(f"Performing federated search for query: '{query}' across sources: {sources} (Placeholder)")
+        external_results: List[SearchResult] = []
+        # Example for a mock DB connector:
+        # if "external_db_1" in (sources or []):
+        #     # results_db1 = self.db_connector1.search(query)
+        #     # external_results.extend(self._adapt_external_results(results_db1, "external_db_1"))
+        #     external_results.append(SearchResult(doc_id="ext_db1_doc1", score=0.75, content="Content from DB1", source_type="federated_db1"))
+
+        # Example for a mock Web API connector:
+        # if "web_search_serpapi" in (sources or []):
+        #     # results_serp = self.serpapi_connector.search(query)
+        #     # external_results.extend(self._adapt_external_results(results_serp, "serpapi"))
+        #     external_results.append(SearchResult(doc_id="ext_web_page1", score=0.80, content="Content from Web search", source_type="federated_web_serpapi"))
+
+        return external_results
+
+    def _adapt_external_results(self, external_api_results: List[Any], source_name: str) -> List[SearchResult]:
+        """Adapts results from an external source to the common SearchResult format."""
+        adapted_results = []
+        # for item in external_api_results:
+        #    adapted_results.append(SearchResult(
+        #        doc_id=item.get("id_field"), # Adjust field names
+        #        score=item.get("score_field", 0.5), # Adjust field names and default
+        #        content=item.get("content_field"), # Adjust field names
+        #        metadata={"original_source": source_name, **item.get("metadata_field", {})},
+        #        source_type=f"federated_{source_name}"
+        #    ))
+        return adapted_results
 
     def reciprocal_rank_fusion(self, ranked_lists: List[List[SearchResult]], k: int = 60) -> List[SearchResult]:
         """

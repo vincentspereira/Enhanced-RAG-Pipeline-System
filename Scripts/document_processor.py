@@ -31,8 +31,15 @@ import unicodedata
 from dataclasses import dataclass
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO) # Potential reconfig if other modules set it up
 logger = logging.getLogger(__name__)
+
+# Attempt to import format handlers; fail gracefully if dependencies are missing for some
+try:
+    from . import format_handlers
+except ImportError as e:
+    logger.warning(f"Could not import format_handlers, some specific format processing might be unavailable: {e}")
+    format_handlers = None # Ensure it exists even if import fails
 
 @dataclass
 class ProcessingConfig:
@@ -77,9 +84,48 @@ class DocumentProcessor:
             ".jpeg": self._process_image,
             ".png": self._process_image,
             ".tiff": self._process_image,
-            ".bmp": self._process_image
+            ".bmp": self._process_image,
+            ".webp": self._process_image_webp_svg_ocr,
+            ".svg": self._process_image_webp_svg_ocr,
         }
         
+        # Add handlers from format_handlers.py if module was imported
+        if format_handlers:
+            self.supported_extensions.update({
+                ".epub": format_handlers.process_epub,
+                ".mobi": format_handlers.process_mobi, # Will gracefully fail if pandoc not present
+                ".tex": format_handlers.process_latex,   # Will gracefully fail if pandoc not present
+                ".rst": format_handlers.process_rst,    # Will gracefully fail if pandoc not present
+                ".adoc": format_handlers.process_asciidoc, # Will gracefully fail if pandoc not present
+                ".asciidoc": format_handlers.process_asciidoc,
+                ".ipynb": format_handlers.process_ipynb,
+                # Archives - these will be handled specially to trigger recursive processing
+                ".zip": self._process_archive,
+                ".tar": self._process_archive,
+                ".gz": self._process_archive, # Often .tar.gz
+                ".bz2": self._process_archive, # Often .tar.bz2
+                ".xz": self._process_archive, # Often .tar.xz
+                # Placeholders for other complex formats
+                ".odp": format_handlers.process_odp,
+                ".key": format_handlers.process_key,
+                ".ods": format_handlers.process_ods,
+                ".numbers": format_handlers.process_numbers,
+                # Confluence might be .html or .xml, or a specific export type
+                # For now, let's assume a .confluence_export extension for placeholder
+                ".confluence_export": format_handlers.process_confluence_export,
+                ".eml": format_handlers.process_eml,
+                ".msg": format_handlers.process_msg,
+                # CAD: .dxf, .dwg etc. - using a generic placeholder for now
+                ".dxf": format_handlers.process_cad_metadata, # Example CAD extension
+                # Audio/Video
+                ".mp4": self._process_audio_video_placeholder,
+                ".avi": self._process_audio_video_placeholder,
+                ".mov": self._process_audio_video_placeholder,
+                ".mp3": self._process_audio_video_placeholder,
+                ".wav": self._process_audio_video_placeholder,
+                ".flac": self._process_audio_video_placeholder,
+            })
+
         # Initialize image processing if OCR is enabled
         if self.config.ocr_enabled:
             try:
@@ -95,22 +141,104 @@ class DocumentProcessor:
             raise FileNotFoundError(f"File not found: {file_path}")
 
         extension = file_path.suffix.lower()
-        if extension not in self.supported_extensions:
-            raise ValueError(f"Unsupported file type: {extension}")
+        # Basic file validation (e.g., non-empty)
+        if file_path.stat().st_size == 0:
+            logger.warning(f"File {file_path} is empty. Skipping.")
+            return []
 
-        try:
-            # Process the document
-            processor = self.supported_extensions[extension]
-            content = processor(file_path)
+        # Placeholder for more advanced content validation (corruption/malicious)
+        if self._is_file_potentially_corrupted_or_malicious(file_path):
+             logger.warning(f"File {file_path} skipped due to potential corruption or malicious content flag.")
+             return []
+
+        if extension not in self.supported_extensions:
+            # Try to detect type using python-magic if available
+            try:
+                import magic
+                detected_mime = magic.from_file(str(file_path), mime=True)
+                logger.info(f"File {file_path} has extension '{extension}', detected MIME: {detected_mime}")
+                # TODO: Add logic to map detected_mime to a handler if different from extension
+            except ImportError:
+                logger.debug("python-magic not installed, relying on extension.")
+            except Exception as e:
+                logger.warning(f"python-magic failed for {file_path}: {e}")
+
+            # If still not found after magic check (or magic not available)
+            if extension not in self.supported_extensions:
+                 logger.warning(f"Unsupported file type based on extension: {extension} for file {file_path}. Skipping.")
+                 return []
+
+
+        all_extracted_texts = []
+
+        # Handle archives by extracting and then processing their contents
+        if extension in [".zip", ".tar", ".gz", ".bz2", ".xz"]: # .rar, .7z would need their libraries
+            if format_handlers: # Ensure format_handlers module is available
+                temp_dir_path_obj = self._create_temp_dir_for_extraction()
+                try:
+                    extracted_files = format_handlers.process_archive(str(file_path), lambda: str(temp_dir_path_obj))
+                    logger.info(f"Archive {file_path}: Extracted {len(extracted_files)} files to {temp_dir_path_obj}.")
+                    for extracted_file_str_path in extracted_files:
+                        # Recursively process extracted files
+                        # Note: This recursive call creates new chunks lists.
+                        # We are collecting text content here to be processed as one "document" from the archive source.
+                        # Alternatively, each file in archive could be its own set of chunks.
+                        # For now, let's aggregate text from supported files within the archive.
+                        extracted_file_path = Path(extracted_file_str_path)
+                        sub_ext = extracted_file_path.suffix.lower()
+                        if sub_ext in self.supported_extensions and sub_ext not in [".zip", ".tar", ".gz", ".bz2", ".xz"]: # Avoid re-processing archives this way
+                             try:
+                                processor = self.supported_extensions[sub_ext]
+                                text_content = processor(extracted_file_path)
+                                if text_content and isinstance(text_content, str):
+                                    all_extracted_texts.append(text_content)
+                             except Exception as e_sub:
+                                logger.error(f"Error processing extracted file {extracted_file_path} from archive {file_path}: {e_sub}")
+                        elif sub_ext in [".zip", ".tar", ".gz", ".bz2", ".xz"]:
+                             logger.info(f"Found nested archive {extracted_file_path}, recursively processing its text content.")
+                             # This will return a list of chunk dicts, we need raw text here for aggregation.
+                             # Simpler approach: Process nested archive and get its text.
+                             # This requires process_document to return raw text if called in a specific mode,
+                             # or handle chunk dictionaries appropriately.
+                             # For now, let's assume _process_archive itself should handle recursion internally
+                             # if it wants to aggregate all text. The current format_handlers.process_archive
+                             # returns file paths, so this structure is for processing those paths.
+                             # To aggregate all text from an archive (including nested ones) into one "document":
+                             nested_archive_texts = self.process_document_to_text(extracted_file_path) # New helper needed
+                             if nested_archive_texts:
+                                all_extracted_texts.append(nested_archive_texts)
+
+                finally:
+                    self._cleanup_temp_dir(temp_dir_path_obj)
+
+                content = "\n\n--- File Separator ---\n\n".join(all_extracted_texts)
+            else:
+                logger.warning(f"format_handlers module not available, cannot process archive {file_path}")
+                return [] # Or raise error
+        else:
+            # Process single document
+            try:
+                processor = self.supported_extensions[extension]
+                content = processor(file_path) # This should return a string
+            except Exception as e:
+                 logger.error(f"Error processing {file_path} with handler for {extension}: {e}")
+                 raise # Re-raise to be caught by the outer try-except
+
+        if not isinstance(content, str):
+            logger.error(f"Processor for {extension} did not return a string for {file_path}. Got {type(content)}. Skipping.")
+            return []
             
-            # Clean the text
-            content = self._clean_text(content)
+        # Clean the text
+        cleaned_content = self._clean_text(content)
+        if not cleaned_content.strip():
+            logger.info(f"No content extracted or content became empty after cleaning for {file_path}.")
+            return []
             
             # Extract metadata
-            base_metadata = self._extract_metadata(content, file_path)
+            base_metadata = self._extract_metadata(cleaned_content, file_path) # Use cleaned_content for metadata
             
             # Split into chunks
-            chunks = self._chunk_text(content)
+            chunks = self._chunk_text(cleaned_content) # Use cleaned_content for chunking
             
             # Create chunk documents with metadata
             chunk_docs = []
@@ -384,8 +512,120 @@ class DocumentProcessor:
             
             return ocr_text
         except Exception as e:
-            logger.error(f"Error during OCR processing: {e}")
+            logger.error(f"Error during OCR processing for {file_path}: {e}")
             return ""
+
+    def _is_file_potentially_corrupted_or_malicious(self, file_path: Path) -> bool:
+        """
+        Basic placeholder for content validation.
+        Checks for zero-byte files or excessively large files as simple heuristics.
+        A real implementation would involve more sophisticated checks, possibly
+        integrating with tools like ClamAV for malware or format-specific validators.
+        """
+        try:
+            size = file_path.stat().st_size
+            if size == 0:
+                logger.warning(f"File {file_path} is zero bytes (potentially corrupted or empty).")
+                return True # Considered problematic
+
+            # Example: Flag files larger than 1GB as potentially problematic for auto-processing
+            # This limit should be configurable.
+            MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024 * 1024 # 1 GB
+            if size > MAX_FILE_SIZE_BYTES:
+                logger.warning(f"File {file_path} is very large ({size} bytes). May be corrupted or unsuitable for typical processing.")
+                return True # Flagging large files
+
+            # Placeholder for actual malware scanning integration
+            # if format_handlers and hasattr(format_handlers, 'scan_for_malware'):
+            #     if format_handlers.scan_for_malware(str(file_path)):
+            #         logger.warning(f"Malware scan placeholder: flagged {file_path}.")
+            #         return True
+
+            # Add more checks here, e.g., magic number validation against extension
+            # import magic
+            # try:
+            #     mime_type = magic.from_file(str(file_path), mime=True)
+            #     # Compare mime_type with expected based on extension
+            # except Exception:
+            #     pass # magic might not be available or fail
+
+        except Exception as e:
+            logger.error(f"Error during file validation for {file_path}: {e}")
+            return True # Treat as problematic if validation fails
+
+        return False # Default to not corrupted/malicious
+
+    def _create_temp_dir_for_extraction(self) -> Path:
+        """Creates a temporary directory for archive extraction."""
+        # Use a main temporary directory for all extractions from this processor instance
+        # to simplify cleanup if the processor is long-lived.
+        # Or create a new one each time if preferred.
+        if not hasattr(self, '_main_temp_dir') or not self._main_temp_dir.exists():
+             # Create a general temp directory for this DocumentProcessor instance
+            self._main_temp_dir = Path(tempfile.mkdtemp(prefix="docproc_"))
+            logger.info(f"Created main temporary directory for extractions: {self._main_temp_dir}")
+
+        # Create a unique subdirectory for each archive extraction call
+        extraction_path = Path(tempfile.mkdtemp(dir=self._main_temp_dir))
+        return extraction_path
+
+    def _cleanup_temp_dir(self, temp_dir_path: Optional[Path] = None):
+        """Cleans up a specific temporary directory, or the main one if no path is given."""
+        if temp_dir_path and temp_dir_path.exists():
+            try:
+                shutil.rmtree(temp_dir_path)
+                logger.debug(f"Cleaned up temporary directory: {temp_dir_path}")
+            except Exception as e:
+                logger.error(f"Error cleaning up temporary directory {temp_dir_path}: {e}")
+        elif hasattr(self, '_main_temp_dir') and self._main_temp_dir.exists():
+            try:
+                shutil.rmtree(self._main_temp_dir)
+                logger.info(f"Cleaned up main temporary extraction directory: {self._main_temp_dir}")
+                delattr(self, '_main_temp_dir')
+            except Exception as e:
+                logger.error(f"Error cleaning up main temporary directory {self._main_temp_dir}: {e}")
+
+    def __del__(self):
+        """Ensure main temporary directory is cleaned up when the processor is deleted."""
+        self._cleanup_temp_dir()
+
+
+    def process_document_to_text(self, file_path: Path) -> str:
+        """
+        Helper function to process a single document (including nested archives)
+        and return all its text content as a single string.
+        Used by the archive processing logic.
+        """
+        logger.debug(f"Recursively processing {file_path} to get its text content.")
+        extension = file_path.suffix.lower()
+        all_texts = []
+
+        if extension in [".zip", ".tar", ".gz", ".bz2", ".xz"]:
+            if format_handlers:
+                temp_dir_path_obj = self._create_temp_dir_for_extraction()
+                try:
+                    extracted_files = format_handlers.process_archive(str(file_path), lambda: str(temp_dir_path_obj))
+                    for extracted_file_str_path in extracted_files:
+                        extracted_file_path_obj = Path(extracted_file_str_path)
+                        # Recursive call to get text from these files
+                        all_texts.append(self.process_document_to_text(extracted_file_path_obj))
+                finally:
+                    self._cleanup_temp_dir(temp_dir_path_obj) # Clean up specific temp dir
+            else:
+                logger.warning(f"format_handlers not available, cannot extract text from archive {file_path}")
+        elif extension in self.supported_extensions:
+            try:
+                processor = self.supported_extensions[extension]
+                text = processor(file_path)
+                if text and isinstance(text, str):
+                    all_texts.append(text)
+            except Exception as e:
+                logger.error(f"Error processing sub-file {file_path} for text: {e}")
+        else:
+            logger.warning(f"Unsupported file type {extension} in process_document_to_text for {file_path}")
+
+        return "\n\n--- File Separator ---\n\n".join(filter(None, all_texts))
+
 
     def _process_docx(self, file_path: Path) -> str:
         """Process Word documents."""
@@ -403,13 +643,34 @@ class DocumentProcessor:
         return "\n".join(text)
 
     def _process_excel(self, file_path: Path) -> str:
-        """Process Excel files."""
-        df = pd.read_excel(file_path)
-        return df.to_string()
+        """Process Excel files, concatenating text from all sheets."""
+        try:
+            xls = pd.ExcelFile(file_path)
+            all_text = []
+            for sheet_name in xls.sheet_names:
+                df = xls.parse(sheet_name)
+                # Convert entire sheet to string, trying to preserve some structure
+                sheet_text = f"Sheet: {sheet_name}\n{df.to_string(index=True, na_rep='NaN')}\n\n"
+                all_text.append(sheet_text)
+            return "".join(all_text)
+        except Exception as e:
+            logger.error(f"Error processing Excel file {file_path}: {e}")
+            return "" # Return empty string on error
 
     def _process_csv(self, file_path: Path) -> str:
         """Process CSV files."""
-        df = pd.read_csv(file_path)
+        # TODO: Add encoding detection for robust CSV handling
+        try:
+            df = pd.read_csv(file_path)
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(file_path, encoding='latin1') # Common fallback
+            except Exception as e:
+                logger.error(f"Error processing CSV {file_path} even with latin1 encoding: {e}")
+                return ""
+        except Exception as e:
+            logger.error(f"Error processing CSV {file_path}: {e}")
+            return ""
         return df.to_string()
 
     def _process_json(self, file_path: Path) -> str:
@@ -458,8 +719,8 @@ class DocumentProcessor:
             # Convert to string representation
             return df.to_string(index=True, max_rows=None, max_cols=None)
         except Exception as e:
-            logger.error(f"Error processing Parquet file: {e}")
-            raise
+                logger.error(f"Error processing Parquet file {file_path}: {e}")
+                return "" # Return empty string on error
 
     def _process_sql(self, file_path: Path) -> str:
         """Process SQL files.
@@ -493,13 +754,69 @@ class DocumentProcessor:
                 
                 formatted_content.append(formatted_sql)
                 
-                # Extract and add comments separately
-                comments = [token.value for token in statement.tokens if token.ttype is sqlparse.tokens.Comment]
-                if comments:
-                    formatted_content.extend(comments)
+                # Extract and add comments separately if not already part of formatted_sql by default
+                # (sqlparse.format with strip_comments=False should keep them)
+                # comments = [token.value for token in statement.tokens if token.ttype is sqlparse.tokens.Comment]
+                # if comments:
+                #    formatted_content.extend(comments)
             
             return "\n\n".join(formatted_content)
             
         except Exception as e:
-            logger.error(f"Error processing SQL file: {e}")
-            raise
+            logger.error(f"Error processing SQL file {file_path}: {e}")
+            return "" # Return empty string on error
+
+
+    # --- Placeholder methods for new formats / features ---
+    def _process_image_webp_svg_ocr(self, file_path: Path) -> str:
+        """Placeholder handler for WEBP/SVG OCR, delegates to format_handlers if available."""
+        if format_handlers and hasattr(format_handlers, 'process_webp_svg_ocr'):
+            return format_handlers.process_webp_svg_ocr(str(file_path))
+        logger.warning(f"WEBP/SVG OCR handler not fully available for {file_path}.")
+        return self._process_image(file_path) # Fallback to generic image OCR if Pillow can open it
+
+    def _process_audio_video_placeholder(self, file_path: Path) -> str:
+        """Placeholder for audio/video processing."""
+        if format_handlers and hasattr(format_handlers, 'transcribe_audio_video'):
+            text = format_handlers.transcribe_audio_video(str(file_path))
+            # Placeholder for speaker identification - would append to text or add to metadata
+            # speaker_info = format_handlers.identify_speakers(str(file_path))
+            # text += f"\n\n{speaker_info}"
+            return text
+        logger.warning(f"Audio/Video processing handler not available for {file_path}.")
+        return f"Audio/Video content from {file_path.name} (Placeholder)"
+
+    def _process_archive(self, file_path: Path) -> str:
+        """
+        Wrapper for archive processing. This method is called by the dispatcher.
+        It uses process_document_to_text to get all text from an archive.
+        """
+        logger.info(f"Starting processing of archive: {file_path}")
+        # process_document_to_text will handle the extraction and recursive processing.
+        # It returns a single string of all aggregated text.
+        return self.process_document_to_text(file_path)
+
+    # --- Future PDF enhancements (placeholders in format_handlers) ---
+    def _enhance_pdf_processing(self, file_path: Path, existing_text: str) -> str:
+        """
+        Placeholder to demonstrate where table and chart extraction for PDFs would be added.
+        This would likely modify the metadata or append structured data.
+        For now, it just returns the existing text.
+        """
+        all_content = [existing_text]
+        if format_handlers:
+            if hasattr(format_handlers, 'extract_tables_from_pdf'):
+                table_data = format_handlers.extract_tables_from_pdf(str(file_path))
+                if table_data:
+                    all_content.append("\n\n--- Extracted Tables ---\n" + table_data)
+            if hasattr(format_handlers, 'recognize_charts_from_pdf'):
+                chart_data = format_handlers.recognize_charts_from_pdf(str(file_path))
+                if chart_data:
+                    all_content.append("\n\n--- Extracted Chart Data ---\n" + chart_data)
+        return "\n".join(all_content)
+
+    # In _process_pdf, after getting text_content, you could call:
+    # full_pdf_text = "\n\n".join(text_content)
+    # content_with_extras = self._enhance_pdf_processing(file_path, full_pdf_text)
+    # return content_with_extras
+    # (This change is not made yet to keep the PR smaller, but indicates intent)

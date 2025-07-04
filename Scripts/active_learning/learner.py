@@ -15,23 +15,44 @@ class RelevanceFeedback:
 class ActiveLearner:
     """Active learning system for relevance feedback."""
     
-    def __init__(self, embedding_dimension: int):
+    def __init__(self, embedding_dimension: Optional[int] = None): # Made embedding_dimension optional
         self.relevance_history: List[RelevanceFeedback] = []
         self.positive_embeddings: List[np.ndarray] = []
         self.negative_embeddings: List[np.ndarray] = []
         self.embedding_dimension = embedding_dimension
-    
-    def add_feedback(self, feedback: RelevanceFeedback, embedding: np.ndarray):
+        self.interaction_data: List[Dict[str, Any]] = [] # For continuous learning
+
+    def add_interaction_data(self, query: str, context: str, response: str, domain: Optional[str]=None, feedback_score: Optional[float]=None):
+        """Adds interaction data for continuous learning."""
+        self.interaction_data.append({
+            "query": query,
+            "context": context,
+            "response": response,
+            "domain": domain,
+            "feedback_score": feedback_score, # Could be explicit (e.g., thumbs up/down) or implicit
+            "timestamp": "" # Add timestamp, e.g. datetime.now().isoformat()
+        })
+
+    def get_training_data_for_finetuning(self, min_samples: int = 100) -> Optional[List[Dict[str,Any]]]:
+        """Retrieves collected interaction data suitable for fine-tuning."""
+        if len(self.interaction_data) >= min_samples:
+            # Potentially filter or process data further
+            return self.interaction_data
+        return None
+
+    def add_feedback(self, feedback: RelevanceFeedback, embedding: Optional[np.ndarray] = None): # Made embedding optional
         """Add new relevance feedback and its embedding."""
         self.relevance_history.append(feedback)
         
-        if feedback.is_relevant:
-            self.positive_embeddings.append(embedding)
-        else:
-            self.negative_embeddings.append(embedding)
+        if embedding is not None: # Only add if embedding is provided
+            if feedback.is_relevant:
+                self.positive_embeddings.append(embedding)
+            else:
+                self.negative_embeddings.append(embedding)
     
-    def select_samples_for_feedback(self, 
-                                  candidate_embeddings: List[np.ndarray],
+    def select_samples_for_feedback(self,
+                                  candidate_embeddings: List[np.ndarray], # candidate_embeddings might not always be available
+                                  candidate_items: Optional[List[Any]] = None, # Raw items if embeddings not available
                                   n_samples: int = 5) -> List[int]:
         """Select most informative samples for feedback using uncertainty sampling."""
         if not self.positive_embeddings and not self.negative_embeddings:

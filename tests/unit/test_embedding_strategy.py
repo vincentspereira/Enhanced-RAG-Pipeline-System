@@ -168,7 +168,37 @@ async def test_apply_compression_placeholder(strategy_manager: EmbeddingStrategy
     compressed_unknown = await strategy_manager._apply_compression(sample_embeddings, technique="unknown_tech")
     assert compressed_unknown == sample_embeddings # Placeholder returns original
 
-# TODO: Test get_multimodal_embedding_provider once specific multi-modal providers are defined/mocked.
+@patch('Scripts.embeddings.create_embedding_provider')
+def test_get_multimodal_embedding_provider(mock_create_provider):
+    clip_meta = EmbeddingModelMeta(provider_name="clip", model_name="clip-ViT-B-32", dim=512, languages=["en"], modality="multimodal")
+    text_meta = EmbeddingModelMeta(provider_name="local_hf", model_name="st_model", dim=384, languages=["en"], modality="text")
+
+    manager = EmbeddingStrategyManager(model_configs=[clip_meta, text_meta])
+
+    mock_clip_instance = MagicMock(spec=EmbeddingProvider) # Use EmbeddingProvider from Scripts.embeddings
+    mock_clip_instance.get_embedding_dim.return_value = 512
+
+    # Configure create_embedding_provider to return the mock_clip_instance when "clip" is requested
+    def create_provider_side_effect(provider, model, **kwargs):
+        if provider == "clip" and model == "clip-ViT-B-32":
+            return mock_clip_instance
+        raise ValueError(f"Unexpected provider/model for mock: {provider}/{model}")
+    mock_create_provider.side_effect = create_provider_side_effect
+
+    # Test selecting by "multimodal"
+    provider_multi = manager.get_multimodal_embedding_provider({"modality": "multimodal"})
+    assert provider_multi == mock_clip_instance
+    mock_create_provider.assert_called_with(provider="clip", model="clip-ViT-B-32", modality="multimodal", provider_kwargs=None)
+
+    # Test selecting by "image" (should also pick up "multimodal" if it's the best/only fit)
+    provider_image = manager.get_multimodal_embedding_provider({"modality": "image"})
+    assert provider_image == mock_clip_instance # Expecting it to find the same 'multimodal' one
+
+    # Test when no suitable multimodal/image model is configured
+    manager_only_text = EmbeddingStrategyManager(model_configs=[text_meta])
+    provider_none = manager_only_text.get_multimodal_embedding_provider({"modality": "multimodal"})
+    assert provider_none is None
+
 # TODO: Test get_compressed_embeddings (the public method) once _apply_compression is more than a placeholder
 #       and interacts with an actual embedding generation step.
 

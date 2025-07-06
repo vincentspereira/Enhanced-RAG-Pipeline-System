@@ -78,6 +78,9 @@ SoundFile>=0.12.1
 pydub>=0.25.1 # For audio conversion (Added for Phase 2)
 camelot-py[cv]>=0.11.0 # For PDF table extraction (Added for Phase 2). `[cv]` includes opencv-python-headless.
 # Ghostscript is also a system dependency for Camelot.
+google-api-python-client>=2.0.0 # For Google Slides/Sheets API
+google-auth-httplib2>=0.1.0 # For Google API authentication
+google-auth-oauthlib>=0.4.1 # For Google API authentication (often used with client)
 
 
 # Enhanced text processing & Search Features

@@ -25,11 +25,39 @@ from pathlib import Path # Added for Path object usage
 
 logger = logging.getLogger(__name__)
 
-# Placeholder for malware scanning
-def scan_for_malware(file_path: str) -> bool:
-    """Placeholder for malware scanning. In a real system, integrate a proper scanner."""
-    logger.warning(f"Malware scanning for {file_path} is a placeholder and not functional.")
-    return False # Assume no malware for now
+# Placeholder for malware scanning - enhanced mockup
+def scan_for_malware(file_path: str, within_archive: bool = True) -> bool:
+    """
+    Simulates basic malware scanning by checking for risky file extensions.
+    In a real system, this would integrate a proper scanner like ClamAV.
+    If 'within_archive' is True, it's more stringent with executable-like extensions.
+    """
+    filename = os.path.basename(file_path).lower()
+    risky_extensions_general = {'.scr', '.pif', '.com'} # Generally suspicious anywhere
+    risky_extensions_in_archive = {'.exe', '.vbs', '.js', '.bat', '.cmd', '.ps1', '.jar', '.dll'} # More suspicious inside archives
+
+    extension = os.path.splitext(filename)[1]
+
+    if extension in risky_extensions_general:
+        logger.warning(f"Malware Scan Mockup: File '{filename}' has a generally risky extension '{extension}'. Flagged.")
+        return True
+
+    if within_archive and extension in risky_extensions_in_archive:
+        logger.warning(f"Malware Scan Mockup: File '{filename}' (in archive context) has risky extension '{extension}'. Flagged.")
+        return True
+
+    # Add a simple content check placeholder (very basic, not real detection)
+    # try:
+    #     with open(file_path, 'rb') as f:
+    #         content_sample = f.read(1024) # Read first 1KB
+    #         if b"MZ" in content_sample and extension not in {".exe", ".dll"}: # MZ is start of .exe
+    #             logger.warning(f"Malware Scan Mockup: File '{filename}' contains PE header but is not .exe/.dll. Suspicious.")
+    #             return True
+    # except Exception:
+    #     pass # Ignore read errors for this mock
+
+    logger.debug(f"Malware Scan Mockup: File '{filename}' passed basic extension check.")
+    return False # Assume no malware for this mockup
 
 def process_epub(file_path: str) -> str:
     """Processes EPUB files."""
@@ -172,17 +200,83 @@ def process_archive(file_path: str, extract_to_temp_dir_fn: callable) -> List[st
 
 # --- Placeholders for formats requiring APIs or more complex libraries ---
 
-def process_google_slides(api_client: Any, file_id: str) -> str:
-    """Placeholder for Google Slides processing via API."""
-    logger.warning("Google Slides processing requires API integration and is currently a placeholder.")
-    # Example: text = api_client.get_slides_text(file_id)
-    return f"Text from Google Slide ID: {file_id} (Placeholder)"
+def process_google_slides(file_identifier: str, mock_api_client: Optional[Any] = None) -> str:
+    """
+    Processes Google Slides using a (mocked) API client.
+    'file_identifier' is expected to be a Google Slides File ID.
+    'mock_api_client' would be a real Google API client service object in production.
+    """
+    logger.info(f"Attempting to process Google Slide with ID: {file_identifier}")
+    if mock_api_client is None:
+        logger.warning("No Google API client provided for Slides. Returning placeholder text.")
+        return f"Google Slide content for ID {file_identifier} (API client missing - placeholder)."
 
-def process_google_sheets(api_client: Any, file_id: str) -> str:
-    """Placeholder for Google Sheets processing via API."""
-    logger.warning("Google Sheets processing requires API integration and is currently a placeholder.")
-    # Example: data_string = api_client.get_sheets_data_as_string(file_id)
-    return f"Data from Google Sheet ID: {file_id} (Placeholder)"
+    try:
+        # --- Mocked API Interaction ---
+        # In a real scenario:
+        # presentation = mock_api_client.presentations().get(presentationId=file_identifier).execute()
+        # slides = presentation.get('slides', [])
+        # text_elements = []
+        # for slide in slides:
+        #     for pageElement in slide.get('pageElements', []):
+        #         if 'shape' in pageElement and 'text' in pageElement['shape']:
+        #             for textRun in pageElement['shape']['text'].get('textElements', []):
+        #                 if 'textRun' in textRun and 'content' in textRun['textRun']:
+        #                     text_elements.append(textRun['textRun']['content'])
+        #         # Could also extract from notesPage: slide.get('notesPage', {}).get(... )
+        # return "\n".join(text_elements)
+        # --- End of Real Scenario ---
+
+        # Mocked response based on file_id for testing:
+        if file_identifier == "sample_slide_id_1":
+            logger.info(f"Processing Google Slide (mocked): {file_identifier}")
+            return "Slide 1 Title\nSlide 1 Body Text.\nNotes: Important note 1.\n\nSlide 2 Title\nSlide 2 Bullet 1\nSlide 2 Bullet 2."
+        elif file_identifier == "empty_slide_id":
+            logger.info(f"Processing empty Google Slide (mocked): {file_identifier}")
+            return ""
+        else:
+            logger.warning(f"Unknown Google Slide ID for mock processing: {file_identifier}")
+            return f"Unknown Google Slide content for ID {file_identifier} (mocked)."
+
+    except Exception as e:
+        logger.error(f"Error processing Google Slide ID {file_identifier} (even with mock): {e}")
+        return f"Error processing Google Slide ID {file_identifier}."
+
+def process_google_sheets(file_identifier: str, mock_api_client: Optional[Any] = None) -> str:
+    """
+    Processes Google Sheets using a (mocked) API client.
+    'file_identifier' is expected to be a Google Sheets File ID.
+    'mock_api_client' would be a real Google API client service object in production.
+    Returns a string representation (e.g., CSV-like) of the sheet data.
+    """
+    logger.info(f"Attempting to process Google Sheet with ID: {file_identifier}")
+    if mock_api_client is None:
+        logger.warning("No Google API client provided for Sheets. Returning placeholder text.")
+        return f"Google Sheet data for ID {file_identifier} (API client missing - placeholder)."
+
+    try:
+        # --- Mocked API Interaction ---
+        # In a real scenario:
+        # result = mock_api_client.spreadsheets().values().get(spreadsheetId=file_identifier, range="Sheet1").execute() # Example: get Sheet1
+        # values = result.get('values', [])
+        # csv_representation = "\n".join([",".join(map(str, row)) for row in values])
+        # return csv_representation
+        # --- End of Real Scenario ---
+
+        # Mocked response:
+        if file_identifier == "sample_sheet_id_1":
+            logger.info(f"Processing Google Sheet (mocked): {file_identifier}")
+            return "Header1,Header2,Header3\nVal1A,Val1B,Val1C\nVal2A,Val2B,Val2C"
+        elif file_identifier == "empty_sheet_id":
+            logger.info(f"Processing empty Google Sheet (mocked): {file_identifier}")
+            return ""
+        else:
+            logger.warning(f"Unknown Google Sheet ID for mock processing: {file_identifier}")
+            return f"Unknown Google Sheet data for ID {file_identifier} (mocked)."
+
+    except Exception as e:
+        logger.error(f"Error processing Google Sheet ID {file_identifier} (even with mock): {e}")
+        return f"Error processing Google Sheet ID {file_identifier}."
 
 def process_odp(file_path: str) -> str:
     """Processes ODP (OpenDocument Presentation) files."""
@@ -231,18 +325,77 @@ def process_numbers(file_path: str) -> str:
     return f"Data from Apple Numbers file {os.path.basename(file_path)} (Placeholder)"
 
 def process_confluence_export(file_path: str) -> str:
-    """Processes Confluence exports (assuming HTML or XML based)."""
-    logger.warning(f"Confluence export processing for {file_path} is a placeholder. Specific logic depends on export format (HTML/XML).")
-    # This would likely be similar to HTML or XML processing,
-    # but might need specific parsing for Confluence structures.
-    # For now, try treating as HTML as a common export type.
+    """
+    Processes Confluence exports, expecting a ZIP file containing HTML pages.
+    Extracts text from HTML files found within the root or 'pages' directory of the ZIP.
+    """
+    logger.info(f"Processing Confluence export: {file_path}")
+    if not zipfile.is_zipfile(file_path):
+        logger.warning(f"{file_path} is not a ZIP file. Confluence export handler expects a ZIP. Attempting direct HTML parse as fallback.")
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                soup = BeautifulSoup(f.read(), "html.parser") # Use html.parser for broader compatibility
+            return soup.get_text(separator='\n', strip=True)
+        except Exception as e:
+            logger.error(f"Failed to parse {file_path} as direct HTML after non-ZIP check: {e}")
+            return f"Error: Could not process Confluence export {os.path.basename(file_path)} as ZIP or HTML."
+
+    all_text_content = []
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            soup = BeautifulSoup(f.read(), "lxml")
-        return soup.get_text()
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            member_list = zip_ref.namelist()
+            html_files_to_process = []
+
+            for member_name in member_list:
+                # Heuristic: process HTML files not in common attachment/style folders
+                # Confluence exports might have pages in root or a 'pages' subdir.
+                if member_name.lower().endswith(('.html', '.htm')):
+                    if not any(ignored_folder in member_name.lower() for ignored_folder in ['attachments/', 'styles/', 'images/', 'css/', 'js/']):
+                        html_files_to_process.append(member_name)
+
+            if not html_files_to_process:
+                logger.warning(f"No primary HTML content files found in Confluence export ZIP: {file_path}")
+                return "No processable HTML content found in Confluence ZIP."
+
+            logger.info(f"Found {len(html_files_to_process)} HTML files to process in {file_path}: {html_files_to_process}")
+
+            for html_file_name in sorted(html_files_to_process): # Sort for consistent ordering
+                try:
+                    with zip_ref.open(html_file_name) as html_file:
+                        # Read file content, decode it (assuming UTF-8, common for Confluence)
+                        # Add error handling for decoding if necessary
+                        html_content_bytes = html_file.read()
+                        try:
+                            html_content_str = html_content_bytes.decode('utf-8')
+                        except UnicodeDecodeError:
+                            logger.warning(f"UTF-8 decode failed for {html_file_name} in {file_path}, trying latin-1.")
+                            html_content_str = html_content_bytes.decode('latin-1', errors='replace')
+
+                        soup = BeautifulSoup(html_content_str, 'html.parser')
+
+                        # Attempt to find main content area if known (e.g., Confluence specific divs)
+                        main_content_area = soup.find(id="main-content") or soup.find(class_="wiki-content") or soup.find("body")
+                        if main_content_area:
+                            page_text = main_content_area.get_text(separator='\n', strip=True)
+                        else:
+                            page_text = soup.get_text(separator='\n', strip=True) # Fallback to full text
+
+                        if page_text.strip():
+                            all_text_content.append(f"\n\n--- Page: {html_file_name} ---\n{page_text}")
+                except Exception as e_page:
+                    logger.error(f"Error processing HTML file '{html_file_name}' within ZIP '{file_path}': {e_page}")
+
+        if not all_text_content:
+            return f"No text successfully extracted from HTML files in Confluence ZIP: {os.path.basename(file_path)}"
+
+        return "\n".join(all_text_content).strip()
+
+    except zipfile.BadZipFile:
+        logger.error(f"File {file_path} is not a valid ZIP file or is corrupted.")
+        return f"Error: Corrupted or invalid ZIP file for Confluence export {os.path.basename(file_path)}."
     except Exception as e:
-        logger.error(f"Error processing Confluence export {file_path} as HTML: {e}")
-    return f"Text from Confluence export {os.path.basename(file_path)} (Placeholder)"
+        logger.error(f"General error processing Confluence export ZIP {file_path}: {e}", exc_info=True)
+        return f"Error processing Confluence export {os.path.basename(file_path)}."
 
 def process_eml(file_path: str) -> str:
     """Processes EML (email) files using Python's email library."""
@@ -644,10 +797,36 @@ def extract_tables_from_pdf(file_path: str) -> str:
         return f"Error extracting tables from {os.path.basename(file_path)}: {e}"
 
 def recognize_charts_from_pdf(file_path: str) -> str:
-    """Placeholder for chart recognition from PDF."""
-    logger.warning(f"Chart recognition from PDF {file_path} is a placeholder.")
-    # This is a very complex CV task.
-    return f"Chart data from PDF {os.path.basename(file_path)} (Placeholder)"
+    """
+    Placeholder for chart recognition from PDF.
+    This is a highly complex Computer Vision and OCR task. A full implementation
+    would require specialized models (e.g., object detection for charts, chart type
+    classification, OCR for axes/legends, and logic to extract data points).
+    """
+    logger.warning(f"Chart recognition from PDF {file_path} is a conceptual placeholder.")
+
+    # Conceptual Steps for a full implementation:
+    # 1. Convert PDF pages to high-resolution images.
+    # 2. Use an object detection model (e.g., trained on document elements) to find chart bounding boxes.
+    # 3. For each detected chart:
+    #    a. Crop the chart image.
+    #    b. Classify chart type (e.g., bar, line, pie, scatter).
+    #    c. Apply type-specific logic:
+    #       - OCR axis labels, titles, legends.
+    #       - For bar/line charts: Detect bars/lines, estimate their values relative to axes.
+    #       - For pie charts: Detect slices, OCR legend to get categories, estimate percentages.
+    #    d. Structure the extracted data (e.g., as JSON or CSV representation of the chart's data).
+    #
+    # A simpler, partial approach (leveraging existing PDF image OCR):
+    # If charts are embedded as images within the PDF, the main PDF processing
+    # (which extracts images and OCRs them via ImageProcessor) might pick up
+    # textual elements like chart titles, axis labels, and legend text.
+    # This wouldn't extract the underlying data points or structure but could provide some context.
+
+    # For now, this function returns a placeholder string.
+    # The actual text from chart images might be captured during the PDF's image OCR pass
+    # if self.config.extract_images and self.config.ocr_enabled are true in DocumentProcessor.
+    return f"Chart data extraction from PDF {os.path.basename(file_path)} is not yet implemented. Textual elements within chart images might be captured by general PDF OCR."
 
 def process_webp_svg_ocr(file_path: str) -> str:
     """Placeholder for WEBP/SVG OCR."""

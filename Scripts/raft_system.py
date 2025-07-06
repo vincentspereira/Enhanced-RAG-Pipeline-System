@@ -363,12 +363,39 @@ class RAFTSystem:
 
             # If RL is enabled, perform an RL step
             if self.config.get("reinforcement_learning_integration"):
-                self.integrate_reinforcement_learning_step(
+                # Define state, action for RL step
+                state_representation = {
+                    "query_length": len(query),
+                    "domain": domain,
+                    "context_length": len(context),
+                    # Add more features: query_type, complexity_estimate etc.
+                }
+                action_representation = {
+                    "selected_model_name": selected_llm,
+                    "generation_params_used": generation_params
+                    # Add more: fine_tuning_triggered (bool), specific_fine_tune_params
+                }
+                # For response_time, we'd need to measure it. Placeholder for now.
+                response_time_ms_placeholder = None
+                # For context_relevance, this would come from retrieval eval. Placeholder.
+                retrieved_context_relevance_placeholder = None
+
+                reward = self._calculate_reward(
                     query=query,
-                    selected_model_name=selected_llm, # The LLM that was used
-                    generated_response=response,
+                    response=response,
                     domain=domain,
-                    user_feedback_score=user_feedback_score_placeholder # Pass the same feedback score
+                    feedback_score=user_feedback_score_placeholder,
+                    response_time_ms=response_time_ms_placeholder,
+                    retrieved_context_relevance=retrieved_context_relevance_placeholder
+                )
+                # next_state could include aspects of the response, or be None if episode ends
+                next_state_representation = {"response_length": len(response)}
+
+                self.integrate_reinforcement_learning_step(
+                    state=state_representation,
+                    action=action_representation,
+                    reward=reward,
+                    next_state=next_state_representation
                 )
 
         return response
@@ -952,92 +979,139 @@ class RAFTSystem:
         logger.info(f"Updated performance for model {model_name} on query type {query_type}")
 
     # --- Reinforcement Learning Integration ---
-    def _calculate_reward(self, query: str, response: str, domain: Optional[str], feedback_score: Optional[float] = None) -> float:
+    def _calculate_reward(self,
+                          query: str,
+                          response: str,
+                          domain: Optional[str],
+                          feedback_score: Optional[float] = None, # e.g., -1.0 to 1.0 from user
+                          response_time_ms: Optional[float] = None,
+                          retrieved_context_relevance: Optional[float] = None) -> float: # 0.0 to 1.0
         """
-        Calculates a reward score for a given query-response pair.
-        This is a simplified example. A more robust implementation would consider various factors.
+        Calculates a reward score for a given query-response pair, considering multiple factors.
+        The reward should be designed to guide the RL agent towards desired outcomes.
         """
-        reward = 0.0
-        # Factor 1: User feedback (if available)
+        # Define weights for different reward components (configurable)
+        reward_weights = self.config.get("rl_reward_weights", {
+            "user_feedback": 0.5,
+            "response_quality_heuristic": 0.2,
+            "response_time_penalty": -0.1, # Negative weight for penalty
+            "context_relevance": 0.2
+        })
+
+        total_reward = 0.0
+
+        # Component 1: User Feedback
         if feedback_score is not None:
-            reward += feedback_score * 0.5  # Weight feedback score
+            total_reward += feedback_score * reward_weights.get("user_feedback", 0.5)
 
-        # Factor 2: Response quality (placeholder - e.g., length, coherence, relevance to query if measurable)
-        if response and len(response) > 10: # Basic check for non-empty response
-            reward += 0.1
-        # TODO: Add more sophisticated response quality metrics (e.g., perplexity, ROUGE scores against a reference if applicable)
+        # Component 2: Response Quality Heuristic (example)
+        # More advanced: use a separate model to score response quality, or ROUGE vs. retrieved context.
+        quality_heuristic_score = 0.0
+        if response and len(response) > 20: # Basic check for non-trivial response
+            quality_heuristic_score += 0.5
+        if response and query.lower().split()[0] in response.lower(): # Very basic relevance check
+             quality_heuristic_score += 0.3
+        total_reward += min(quality_heuristic_score, 1.0) * reward_weights.get("response_quality_heuristic", 0.2)
 
-        # Factor 3: Domain relevance (placeholder)
-        # If we could measure how "on-domain" the response is.
-        # Example: if domain == "finance" and "stock market" in response: reward += 0.1
+        # Component 3: Response Time Penalty (example)
+        # Penalize if response time is too high (e.g., > 5 seconds)
+        if response_time_ms is not None:
+            time_penalty_threshold_ms = self.config.get("rl_response_time_penalty_threshold_ms", 5000)
+            if response_time_ms > time_penalty_threshold_ms:
+                # Penalty could be scaled based on how much it exceeds threshold
+                penalty = (response_time_ms - time_penalty_threshold_ms) / time_penalty_threshold_ms
+                total_reward += max(-1.0, -penalty) * abs(reward_weights.get("response_time_penalty", -0.1)) # Ensure penalty is negative
 
-        # Normalize reward to a typical range, e.g., [-1, 1] or [0, 1]
-        # For simplicity, current reward is positive-biased.
-        return max(0, min(1, reward)) # Clip to [0,1] for this example
+        # Component 4: Retrieved Context Relevance (if available)
+        if retrieved_context_relevance is not None: # Assuming a score from 0 to 1
+            total_reward += retrieved_context_relevance * reward_weights.get("context_relevance", 0.2)
+
+        # Normalize reward to a typical range if needed, e.g., [-1, 1] or [0, 1]
+        # The current sum could exceed these; specific RL algos have different reward scale preferences.
+        # For now, let's assume the RL agent can handle varied reward scales.
+        # Clipping can be useful:
+        # total_reward = max(-1.0, min(1.0, total_reward))
+
+        logger.debug(f"RL Reward Calculation: UserFeedback={feedback_score}, QualityHeuristic={quality_heuristic_score}, "
+                     f"ResponseTimeMs={response_time_ms}, ContextRelevance={retrieved_context_relevance} -> TotalReward={total_reward:.3f}")
+        return total_reward
 
     def integrate_reinforcement_learning_step(
         self,
-        query: str,
-        selected_model_name: str,
-        generated_response: str,
-        domain: Optional[str] = None,
-        user_feedback_score: Optional[float] = None # e.g., from a thumbs up/down, converted to -1 to 1
+        state: Dict[str, Any], # Represents the state before an action was taken
+        action: Dict[str, Any], # Represents the action taken (e.g., model selected, fine-tuning params)
+        reward: float,          # The calculated reward for the state-action pair
+        next_state: Optional[Dict[str, Any]] = None # The state after the action (if applicable for the RL algo)
     ):
         """
-        Performs a single step of reinforcement learning update.
-        This method would be called after a response is generated and (optionally) feedback is received.
+        Processes a single experience tuple (state, action, reward, next_state) for RL.
+        This method would typically:
+        1. Store this experience in a replay buffer.
+        2. Trigger an update of the RL agent's policy/value function.
         """
         if not self.config.get("reinforcement_learning_integration"):
             return
 
-        logger.info(f"RL Step: Updating policy based on response for query '{query}' using model '{selected_model_name}'.")
+        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+        experiment_name = f"rl_experience_{action.get('selected_model', 'unknown_model')}_{timestamp}"
 
-        # 1. Calculate Reward
-        reward = self._calculate_reward(query, generated_response, domain, user_feedback_score)
-        logger.info(f"RL Step: Calculated reward: {reward:.2f}")
+        logger.info(f"RL Step ({experiment_name}): Processing experience. Reward: {reward:.3f}")
+        logger.debug(f"RL State: {state}")
+        logger.debug(f"RL Action: {action}")
+        logger.debug(f"RL Next State: {next_state}")
 
-        # 2. Update Policy (Conceptual)
-        # The "policy" here could be parameters influencing model selection in `_intelligent_route_model`
-        # or parameters for the fine-tuning process.
-        # This is highly dependent on the specific RL algorithm chosen (e.g., Q-learning, policy gradients).
+        # 1. Store experience (conceptual - would go into a ReplayBuffer)
+        # self.rl_replay_buffer.add(state, action, reward, next_state, done_flag)
+        # For now, we can log it or store in a simple list for demonstration.
+        if not hasattr(self, 'rl_experiences'): self.rl_experiences = []
+        self.rl_experiences.append({
+            "state": state, "action": action, "reward": reward,
+            "next_state": next_state, "timestamp": timestamp
+        })
 
-        # Example: Adjust preference scores for models in `_intelligent_route_model`
-        # This is a very simplified heuristic, not a full RL algorithm.
-        if selected_model_name not in self.model_performance_analytics:
-            self.model_performance_analytics[selected_model_name] = {"rl_preference_score": 0.0, "rl_updates": 0}
+        # 2. Trigger RL Agent Update (conceptual)
+        # if hasattr(self, 'rl_agent') and self.rl_agent.is_ready_to_train(len(self.rl_experiences)):
+        #     training_loss = self.rl_agent.train_step(self.rl_experiences) # or samples from buffer
+        #     logger.info(f"RL Agent training step performed. Loss: {training_loss}")
+        #     self.track_experiment("rl_agent_training", {"batch_size": self.rl_agent.batch_size}, {"loss": training_loss}, "rl_training")
 
-        current_pref = self.model_performance_analytics[selected_model_name].get("rl_preference_score", 0.0)
-        num_updates = self.model_performance_analytics[selected_model_name].get("rl_updates", 0)
+        # Simplified heuristic update (as before, but using the passed reward directly)
+        selected_model_name = action.get("selected_model_name")
+        if selected_model_name:
+            if selected_model_name not in self.model_performance_analytics:
+                self.model_performance_analytics[selected_model_name] = {"rl_preference_score": 0.0, "rl_updates": 0, "cumulative_reward": 0.0}
 
-        # Simple update rule: move preference towards reward
-        learning_rate = 0.01 # Small learning rate
-        new_pref = current_pref + learning_rate * (reward - 0.5) # Assuming reward is ~0.5 for neutral
+            analytics = self.model_performance_analytics[selected_model_name]
+            current_pref = analytics.get("rl_preference_score", 0.0)
+            num_updates = analytics.get("rl_updates", 0)
+            cumulative_reward = analytics.get("cumulative_reward", 0.0)
 
-        self.model_performance_analytics[selected_model_name]["rl_preference_score"] = new_pref
-        self.model_performance_analytics[selected_model_name]["rl_updates"] = num_updates + 1
+            learning_rate = self.config.get("rl_heuristic_learning_rate", 0.01)
+            # Update preference based on whether reward is positive or negative
+            # This simple heuristic assumes reward is centered around 0 for good/bad.
+            # If reward is [0,1], then (reward - 0.5) is a common adjustment.
+            new_pref = current_pref + learning_rate * reward
 
-        logger.info(f"RL Step: Updated preference for model '{selected_model_name}' to {new_pref:.3f} (based on {num_updates+1} updates).")
+            analytics["rl_preference_score"] = new_pref
+            analytics["rl_updates"] = num_updates + 1
+            analytics["cumulative_reward"] = cumulative_reward + reward
+            avg_reward = analytics["cumulative_reward"] / analytics["rl_updates"]
 
-        # TODO: Implement a more formal RL agent and algorithm.
-        # - State representation: (query features, domain, context features, available models)
-        # - Action space: (select model X, choose fine-tuning strategy Y)
-        # - RL Agent: (e.g., DQN, A2C) that learns a Q-function or policy.
-        # - This might involve a separate RLTrainer class or module.
+            logger.info(f"RL Heuristic Update: Model '{selected_model_name}' preference -> {new_pref:.3f} (Avg Reward: {avg_reward:.3f} over {analytics['rl_updates']} updates).")
 
-        # Log RL step details
+        # Log RL step details more comprehensively
         self.track_experiment(
-            experiment_name=f"rl_step_{selected_model_name}_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            experiment_name=experiment_name,
             params={
-                "query": query,
-                "selected_model": selected_model_name,
-                "domain": domain,
-                "user_feedback_score": user_feedback_score,
+                "state_summary": str(state)[:200], # Summary to avoid overly long logs
+                "action": action,
             },
             metrics={
-                "calculated_reward": reward,
-                "updated_rl_preference_score": new_pref,
+                "reward": reward,
+                "current_rl_preference_score": new_pref if selected_model_name else None,
+                "rl_updates_for_model": analytics.get("rl_updates") if selected_model_name and analytics else None,
             },
-            experiment_type="rl_update_step"
+            experiment_type="rl_experience_step"
         )
 
     # Placeholder for the old method name if it's called elsewhere, can be removed if not.

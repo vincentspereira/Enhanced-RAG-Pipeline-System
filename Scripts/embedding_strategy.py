@@ -107,16 +107,51 @@ class EmbeddingStrategyManager:
     # --- Placeholders for other embedding strategies ---
 
     def get_multimodal_embedding_provider(self, strategy_params: Dict[str, Any]) -> Optional[EmbeddingProvider]:
-        """Selects a provider suitable for multimodal embeddings."""
-        logger.warning("Multi-modal embedding strategy is a placeholder.")
-        # Similar to get_embedding_provider, but filters for modality="multimodal" or "image", "audio"
-        # and would likely use specialized multimodal embedding models (e.g., CLIP based).
-        params = strategy_params.copy()
-        params["modality"] = "multimodal" # or "image", "audio" depending on need
-        try:
-            return self.get_embedding_provider(params)
-        except ValueError: # If no direct multimodal, try to find one by other means or return None
-            logger.error("No suitable multimodal provider found with current configs.")
+        """
+        Selects a provider suitable for multimodal embeddings (text, image, potentially audio).
+        Prioritizes models explicitly marked as 'multimodal' or 'image'.
+        """
+        logger.info(f"Attempting to get multimodal embedding provider with params: {strategy_params}")
+
+        # Attempt to find a model explicitly configured for "multimodal" or "image"
+        # This assumes 'clip' provider is registered with such modality in EmbeddingModelMeta
+
+        # Try for "multimodal" first
+        multimodal_params = strategy_params.copy()
+        multimodal_params["modality"] = "multimodal"
+
+        selected_config = next((
+            mc for mc in self.model_configs
+            if mc.modality == "multimodal" and
+               (strategy_params.get("language", "en") in mc.languages if "language" in strategy_params else True) and
+               (strategy_params.get("provider_name") == mc.provider_name if "provider_name" in strategy_params else True) and
+               (strategy_params.get("model_name") == mc.model_name if "model_name" in strategy_params else True)
+        ), None)
+
+        if not selected_config:
+            # Try for "image" modality as a fallback if direct "multimodal" not found or specified
+            image_params = strategy_params.copy()
+            image_params["modality"] = "image"
+            selected_config = next((
+                mc for mc in self.model_configs
+                if mc.modality == "image" and
+                   (strategy_params.get("language", "en") in mc.languages if "language" in strategy_params else True) and
+                   (strategy_params.get("provider_name") == mc.provider_name if "provider_name" in strategy_params else True) and
+                   (strategy_params.get("model_name") == mc.model_name if "model_name" in strategy_params else True)
+            ), None)
+
+        if selected_config:
+            logger.info(f"Selected multimodal/image provider: {selected_config.provider_name} with model {selected_config.model_name}")
+            # Use the main get_embedding_provider to handle caching and instantiation
+            # Pass specific provider_name and model_name to ensure the correct one is chosen
+            return self.get_embedding_provider({
+                "provider_name": selected_config.provider_name,
+                "model_name": selected_config.model_name,
+                "modality": selected_config.modality, # Pass modality for clarity
+                "provider_kwargs": strategy_params.get("provider_kwargs", selected_config.provider_kwargs)
+            })
+        else:
+            logger.error(f"No suitable multimodal or image embedding provider found for strategy: {strategy_params} with current model_configs.")
             return None
 
 
@@ -144,38 +179,61 @@ class EmbeddingStrategyManager:
         if not embeddings:
             return []
 
-        logger.info(f"Applying '{technique}' compression to {len(embeddings)} embeddings. (Placeholder)")
+        logger.info(f"Attempting to apply '{technique}' compression to {len(embeddings)} embeddings.")
 
         if technique == "scalar_quantization_int8":
-            # Example: Convert to NumPy array, scale to [-127, 127], convert to int8
-            # This is a very basic form of scalar quantization.
-            # Proper implementation needs careful handling of scales/offsets per dimension or globally.
             compressed_embeddings = []
-            for emb in embeddings:
-                arr = np.array(emb)
-                # Simple min-max scaling for demonstration. Real implementation needs robust scaling.
-                min_val, max_val = arr.min(), arr.max()
-                if max_val == min_val: # Avoid division by zero if flat
-                    scaled_arr = np.zeros_like(arr, dtype=np.int8)
+            scales_and_zeros = [] # To store quantization parameters
+
+            for emb_float_list in embeddings:
+                emb_np = np.array(emb_float_list, dtype=np.float32)
+
+                # Calculate scale and zero point for symmetric int8 quantization [-127, 127]
+                # For simplicity, using per-vector quantization. Per-tensor or per-channel could also be used.
+                abs_max = np.abs(emb_np).max()
+                if abs_max == 0: # Handle zero vectors
+                    scale = 1.0
+                    zero_point = 0 # Or handle as all zeros directly
+                    quantized_emb = np.zeros_like(emb_np, dtype=np.int8)
                 else:
-                    # Scale to [0, 255] then shift to [-127, 127] approx (or use symmetric range)
-                    scaled_arr = 255 * (arr - min_val) / (max_val - min_val)
-                    quantized_arr = np.round(scaled_arr).astype(np.int8) # Example, not precise for -127 to 127
-                    # Store min_val, max_val as well for dequantization
-                    # For now, just returning the int8 array
-                    compressed_embeddings.append(quantized_arr.tolist())
-            return compressed_embeddings # List of lists of int8
+                    scale = abs_max / 127.0
+                    zero_point = 0 # For symmetric quantization
+                    quantized_emb = np.round(emb_np / scale).astype(np.int8)
+
+                compressed_embeddings.append(quantized_emb.tolist())
+                scales_and_zeros.append({"scale": float(scale), "zero_point": int(zero_point)})
+
+            logger.info(f"Applied scalar_quantization_int8. Output type: List[List[int]]. "
+                        f"Scales/zero_points also generated (conceptual - not returned by this function directly).")
+            # For actual use, these scales/zeros need to be stored alongside the embeddings
+            # or the function needs to return them. For now, just logging.
+            # This function is returning List[List[Any]] so List[List[int]] is fine.
+            return compressed_embeddings
+
         elif technique == "pca":
-            # target_dim = kwargs.get("target_dim", 128)
-            # from sklearn.decomposition import PCA
-            # pca = PCA(n_components=target_dim)
-            # compressed_embeddings_np = pca.fit_transform(np.array(embeddings))
-            # return compressed_embeddings_np.tolist()
-            logger.warning("PCA compression is a placeholder and not fully implemented.")
-            return embeddings # Return original for now
+            target_dim = kwargs.get("target_dim")
+            if not target_dim:
+                logger.warning("PCA compression requested but 'target_dim' not provided. Returning original embeddings.")
+                return embeddings
+            try:
+                from sklearn.decomposition import PCA
+                pca = PCA(n_components=target_dim)
+                embeddings_np = np.array(embeddings)
+                compressed_embeddings_np = pca.fit_transform(embeddings_np)
+                logger.info(f"Applied PCA compression to target_dim={target_dim}. Original_dim={embeddings_np.shape[1]}.")
+                # TODO: The PCA model (pca.components_, pca.mean_) would need to be saved/managed.
+                return compressed_embeddings_np.tolist()
+            except ImportError:
+                logger.error("scikit-learn not installed. Cannot perform PCA compression.")
+                return embeddings # Return original
+            except Exception as e_pca:
+                logger.error(f"Error during PCA compression: {e_pca}")
+                return embeddings
+
+
         else:
-            logger.warning(f"Unknown compression technique: {technique}. Returning original embeddings.")
-            return embeddings # Return original embeddings if technique is unknown
+            logger.warning(f"Unknown or not fully implemented compression technique: {technique}. Returning original embeddings.")
+            return embeddings # Return original embeddings if technique is unknown/unsupported
 
     def get_fine_tuned_embedding_provider(self, model_path_or_id: str, original_model_meta: Optional[EmbeddingModelMeta] = None) -> EmbeddingProvider:
         """
@@ -224,15 +282,19 @@ class EmbeddingStrategyManager:
         return self.providers[provider_key]
 
 # Example Usage:
-# model_metadata = [
-#     EmbeddingModelMeta(provider_name="openai", model_name="text-embedding-3-large", dim=3072, languages=["en","multi"], domain="general", provider_kwargs={"api_key":"..."}),
-#     EmbeddingModelMeta(provider_name="cohere", model_name="embed-english-light-v3.0", dim=384, languages=["en"], domain="general", provider_kwargs={"api_key":"..."}),
-#     EmbeddingModelMeta(provider_name="ollama", model_name="snowflake-arctic-embed", dim=1536, languages=["en"], domain="general"),
-#     EmbeddingModelMeta(provider_name="huggingface_local", model_name="sentence-transformers/all-MiniLM-L6-v2", dim=384, languages=["en"]),
-#     EmbeddingModelMeta(provider_name="huggingface_local", model_name="path/to/my_finetuned_model", dim=768, languages=["en"], domain="finance"),
+# default_model_configs = [
+#     EmbeddingModelMeta(provider_name="ollama", model_name="snowflake-arctic-embed", dim=1536, languages=["en"], modality="text"),
+#     EmbeddingModelMeta(provider_name="local_hf", model_name="sentence-transformers/all-MiniLM-L6-v2", dim=384, languages=["en"], modality="text"),
+#     # Example CLIP model configuration
+#     EmbeddingModelMeta(provider_name="clip", model_name="clip-ViT-B-32", dim=512, languages=["en"], modality="multimodal", provider_kwargs={}),
+#     EmbeddingModelMeta(provider_name="clip", model_name="clip-ViT-L-14", dim=768, languages=["en"], modality="multimodal", provider_kwargs={}),
+#     # Example for a text-only use of a CLIP model if provider supports it or if it's a text tower
+#     EmbeddingModelMeta(provider_name="clip", model_name="clip-ViT-B-32-text", dim=512, languages=["en"], modality="text", provider_kwargs={}),
+#     # Example for an image-only use
+#     EmbeddingModelMeta(provider_name="clip", model_name="clip-ViT-B-32-image", dim=512, languages=["en"], modality="image", provider_kwargs={}),
 # ]
-# strategy_manager = EmbeddingStrategyManager(model_configs=model_metadata)
-# general_provider = strategy_manager.get_embedding_provider({"language": "en"})
-# finance_provider = strategy_manager.get_embedding_provider({"language": "en", "domain": "finance"})
+# strategy_manager = EmbeddingStrategyManager(model_configs=default_model_configs)
+# text_provider = strategy_manager.get_embedding_provider({"language": "en", "modality": "text"})
+# image_provider = strategy_manager.get_multimodal_embedding_provider({"modality": "image"}) # or "multimodal"
 
 ```

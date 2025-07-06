@@ -121,11 +121,41 @@ class ImageProcessor:
                     logger.warning(f"Transformer OCR failed, falling back to Tesseract: {e}")
 
             # Fall back to Tesseract
-            return pytesseract.image_to_string(
+            text_data = pytesseract.image_to_data(
                 img_array,
                 lang=self.config.language,
-                config='--psm 1'  # Automatic page segmentation with OSD
+                config='--psm 1',  # Automatic page segmentation with OSD
+                output_type=pytesseract.Output.DICT
             )
+            # TODO: Advanced Layout Detection - Conceptual Integration Point
+            # Before or after initial OCR with Tesseract (which does some layout analysis via PSM),
+            # a more advanced layout model (e.g., LayoutLM, Detectron2 for documents) could be used.
+            # 1. Run Layout Detection Model:
+            #    - Input: img_array (or original PIL Image)
+            #    - Output: List of bounding boxes for text blocks, tables, figures, etc.
+            #      e.g., layout_blocks = layout_model.predict(image)
+            # 2. Process Text Blocks:
+            #    - For each detected text block (bounding box):
+            #        - Crop the image to this bounding box: `cropped_text_block_img = image.crop(box)`
+            #        - Apply OCR (Tesseract or TrOCR) to this `cropped_text_block_img`.
+            #        - Store the OCR'd text along with its coordinates.
+            # 3. Reconstruct Text Flow:
+            #    - Order the OCR'd text segments based on their layout (e.g., reading order: top-to-bottom, left-to-right).
+            #    - This step is crucial for preserving document structure.
+            # 4. Handle Tables/Figures:
+            #    - Detected tables could be passed to table extraction logic.
+            #    - Figures could be saved or further analyzed.
+            # For now, we are returning the text from Tesseract's default segmentation.
+            # The `image_to_data` output contains block/paragraph/line/word info that could be used
+            # for a simpler form of layout-aware text reconstruction if a full DL model isn't used.
+
+            # Simple concatenation of text from Tesseract's output for now
+            full_text = ""
+            for i in range(len(text_data['text'])):
+                if int(text_data['conf'][i]) > self.config.min_confidence: # Filter by Tesseract confidence
+                    full_text += text_data['text'][i] + " "
+            return full_text.strip()
+
         except Exception as e:
             logger.error(f"OCR processing failed: {e}")
             return ""

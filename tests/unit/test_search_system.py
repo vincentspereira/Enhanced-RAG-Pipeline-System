@@ -10,7 +10,8 @@ from Scripts.search_system import AdvancedSearchSystem, SearchResult, CrossEncod
 from Scripts.embeddings import EmbeddingProvider # Used by AdvancedSearchSystem for type hints
 from Scripts.knowledge_graph.graph import KnowledgeGraph # For mocking KG
 from Scripts.embedding_strategy import EmbeddingStrategyManager, EmbeddingModelMeta
-from dataclasses import dataclass # Added for SearchResult if not already present
+# from dataclasses import dataclass # Not needed if SearchResult imported
+from Scripts.federated_search.connectors import FederatedDataSource # Added for federated search tests
 
 from Scripts.embedding_strategy import EmbeddingStrategyManager, EmbeddingModelMeta
 # dataclasses may not be needed if SearchResult is imported directly
@@ -223,6 +224,55 @@ class TestAdvancedSearchSystem(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(results[0].doc_id, "doc1_kg")
         self.assertEqual(results[0].source_type, "graph")
 
+    def test_personalize_results_mocked_data(self):
+        """ Test the _personalize_results method with mocked user data """
+        # Sample results to be personalized
+        results_to_personalize = [
+            SearchResult(doc_id="doc1", score=0.9, content="Content about foxes and nature", metadata={"topic": "nature", "source_name": "doc_source_blog"}),
+            SearchResult(doc_id="doc2", score=0.8, content="Content about AI models", metadata={"topic": "AI", "source_name": "doc_source_generic"}),
+            SearchResult(doc_id="doc3", score=0.7, content="Content about machine learning", metadata={"topic": "machine learning", "source_name": "doc_source_academic"}),
+            SearchResult(doc_id="doc_unrelated", score=0.6, content="Unrelated content", metadata={"topic": "sports"})
+        ]
+
+        # Test for user123: prefers AI/ML, liked doc3
+        personalized_for_user123 = self.search_system._personalize_results(results_to_personalize.copy(), "user123", "test query for AI")
+
+        self.assertTrue(len(personalized_for_user123) == len(results_to_personalize))
+        # Expect doc3 (liked and topic match) to be boosted significantly
+        # Expect doc2 (topic match) to be boosted
+        # Scores should be different from original for relevant docs
+
+        original_doc3_score = next(r.score for r in results_to_personalize if r.doc_id == "doc3")
+        personalized_doc3_score = next(r.score for r in personalized_for_user123 if r.doc_id == "doc3")
+        self.assertGreater(personalized_doc3_score, original_doc3_score)
+        # Check if doc3 is now ranked higher (it should be due to like and topic)
+        self.assertTrue(personalized_for_user123[0].doc_id == "doc3" or personalized_for_user123[0].doc_id == "doc2")
+
+
+        # Test for user456: prefers foxes/nature, liked doc1, doc4
+        personalized_for_user456 = self.search_system._personalize_results(results_to_personalize.copy(), "user456", "test query for nature")
+        original_doc1_score = next(r.score for r in results_to_personalize if r.doc_id == "doc1")
+        personalized_doc1_score = next(r.score for r in personalized_for_user456 if r.doc_id == "doc1")
+        self.assertGreater(personalized_doc1_score, original_doc1_score)
+        # Expect doc1 to be boosted significantly and likely be the top result
+        self.assertEqual(personalized_for_user456[0].doc_id, "doc1")
+        self.assertIn("personalization_factors_applied", personalized_for_user456[0].metadata)
+
+
+    def test_personalize_results_unknown_user(self):
+        """ Test personalization with an unknown user ID, should return original results """
+        results_to_personalize = [
+            SearchResult(doc_id="doc1", score=0.9, content="Content1"),
+            SearchResult(doc_id="doc2", score=0.8, content="Content2"),
+        ]
+        original_scores = [r.score for r in results_to_personalize]
+
+        personalized_results = self.search_system._personalize_results(results_to_personalize.copy(), "unknown_user_id", "test query")
+
+        self.assertEqual(len(personalized_results), len(results_to_personalize))
+        for i, res in enumerate(personalized_results):
+            self.assertEqual(res.score, original_scores[i]) # Scores should be unchanged
+
 
 class TestCrossEncoderReRanker(unittest.TestCase):
     @patch('sentence_transformers.CrossEncoder') # Mock the actual CrossEncoder model loading
@@ -249,6 +299,44 @@ class TestCrossEncoderReRanker(unittest.TestCase):
         self.assertEqual(reranked[1].score, 0.1)
         self.assertIn('original_fused_score', reranked[0].metadata)
 
+    # Test for Federated Search
+    async def test_federated_search_logic(self):
+        """Tests the _federated_search_external method and its integration."""
+        # Mock FederatedDataSource and its search method
+        mock_connector = AsyncMock() # Mocking the FederatedDataSource abstract class directly for simplicity
+        # If FederatedDataSource was a concrete class, you'd mock that.
+        # If it's an ABC, you might need to create a mock concrete subclass or mock its abstract methods.
+
+        # Let's assume FederatedDataSource is an ABC and we create a runtime mock implementing 'search'
+        mock_connector.source_name = "test_fed_source"
+        mock_connector.is_available = MagicMock(return_value=True)
+        async def mock_search_method(query, top_k):
+            return [SearchResult(doc_id="fed_doc1", score=0.7, content=f"Federated result for {query}", source_type="test_fed_source")]
+        mock_connector.search = mock_search_method # Assign the async def to the mock
+
+        self.search_system.federated_sources = [mock_connector]
+
+        # Test _federated_search_external directly
+        results = await self.search_system._federated_search_external("test query", sources=["test_fed_source"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].doc_id, "fed_doc1")
+        self.assertEqual(results[0].source_type, "test_fed_source")
+
+        # Test integration into main search method (mock other sources to return nothing)
+        self.search_system._perform_semantic_search = AsyncMock(return_value=[])
+        self.search_system.keyword_search_component.search = MagicMock(return_value=[])
+        if self.search_system.knowledge_graph_search:
+            self.search_system.knowledge_graph_search.search = AsyncMock(return_value=[])
+
+        final_results = await self.search_system.search(
+            "another federated test",
+            top_k=1,
+            search_type_weights={"semantic":0, "keyword":0, "graph":0, "federated": 1.0},
+            use_reranker=False
+        )
+        self.assertEqual(len(final_results), 1)
+        self.assertEqual(final_results[0].doc_id, "fed_doc1") # Assuming mock_search_method is general enough
+        self.assertEqual(final_results[0].source_type, "test_fed_source") # RRF should preserve this if it's the only source
 
 if __name__ == '__main__':
     unittest.main()

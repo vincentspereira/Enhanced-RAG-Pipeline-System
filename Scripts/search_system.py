@@ -18,6 +18,7 @@ from Scripts.enhancers.hybrid_search import HybridSearch as ExistingHybridSearch
 from Scripts.knowledge_graph.graph import KnowledgeGraph
 from Scripts.embeddings import EmbeddingProvider # Only EmbeddingProvider ABC needed here for type hint
 from Scripts.embedding_strategy import EmbeddingStrategyManager, EmbeddingModelMeta # Import new strategy manager
+from Scripts.federated_search.connectors import FederatedDataSource # Import for federated search
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +39,14 @@ class AdvancedSearchSystem:
         knowledge_graph_instance: Optional[KnowledgeGraph] = None,
         initial_documents: Optional[List[Dict[str, Any]]] = None,
         default_embedding_strategy_params: Optional[Dict[str, Any]] = None,
+        federated_sources: Optional[List[Any]] = None, # Changed to Any for FederatedDataSource
         **kwargs
     ):
         self.embedding_strategy_manager = embedding_strategy_manager
         self.default_embedding_strategy_params = default_embedding_strategy_params or {"language": "en", "modality": "text"}
+        self.federated_sources: List[FederatedDataSource] = federated_sources or [] # Store federated sources
+        if self.federated_sources:
+            logger.info(f"AdvancedSearchSystem initialized with {len(self.federated_sources)} federated sources.")
 
         # Get a default embedding provider to ascertain default dimension, etc.
         # This provider instance might change per query based on strategy.
@@ -325,7 +330,7 @@ class AdvancedSearchSystem:
         Personalizes search results based on user profile and behavior.
         Placeholder: This should query an Analytics Service.
         """
-        logger.info(f"Personalizing {len(results)} results for user_id: {user_id} and query: '{query}' (Placeholder)")
+        # logger.info(f"Personalizing {len(results)} results for user_id: {user_id} and query: '{query}' (Placeholder)")
         # Mock behavior: For now, just re-sort randomly or based on a dummy factor
         # In a real implementation:
         # 1. Fetch user profile/preferences from Analytics Service (e.g., preferred domains, topics, past interactions)
@@ -334,34 +339,153 @@ class AdvancedSearchSystem:
         #    - Boost documents matching preferences.
         #    - Boost documents previously interacted with positively for similar queries.
         #    - Potentially de-prioritize docs ignored in the past.
-        # Example:
-        # user_prefs = self.analytics_service.get_user_preferences(user_id)
-        # for res in results:
-        #     if res.metadata and user_prefs.get("preferred_domain") == res.metadata.get("domain"):
-        #         res.score *= 1.2 # Boost score by 20%
-        # results.sort(key=lambda x: x.score, reverse=True)
-        return results # Return as is for placeholder
 
-    async def _federated_search_external(self, query: str, sources: Optional[List[str]] = None) -> List[SearchResult]:
+        # Example mock user profiles/behavior data.
+        # In a real system, this would come from an Analytics Service.
+        mock_user_data_store = {
+            "user123": { # User interested in AI/ML, academic sources
+                "preferences": {
+                    "preferred_topics": ["ai", "machine learning", "deep learning"],
+                    "preferred_sources": ["academic_journal", "research_paper_archive"],
+                    "boost_factor_topic": 1.25,
+                    "boost_factor_source": 1.15,
+                },
+                "behavior": {
+                    "liked_doc_ids": ["doc3", "doc_ai_ethics"], # IDs of docs they liked
+                    "clicked_doc_ids_for_query": {query.lower(): ["doc2", "doc_transformer_details"]}, # Docs clicked for *this* query
+                    "boost_factor_liked": 1.4,
+                    "boost_factor_clicked_specific_query": 1.2,
+                }
+            },
+            "user456": { # User interested in nature docs from blogs
+                "preferences": {
+                    "preferred_topics": ["nature", "wildlife", "environment"],
+                    "preferred_sources": ["blog_articles", "nature_magazines"],
+                    "boost_factor_topic": 1.3,
+                    "boost_factor_source": 1.1,
+                },
+                "behavior": {
+                    "liked_doc_ids": ["doc1", "doc4", "doc_forest_life"],
+                    "clicked_doc_ids_for_query": {query.lower(): ["doc1", "doc_birdwatching_guide"]},
+                    "boost_factor_liked": 1.5,
+                    "boost_factor_clicked_specific_query": 1.25,
+                }
+            }
+        }
+
+        user_profile = mock_user_data_store.get(user_id)
+
+        if not user_profile:
+            logger.info(f"No personalization profile found for user_id: {user_id}. Returning original results.")
+            return results
+
+        personalized_results = []
+        logger.debug(f"Applying personalization for user {user_id} with profile: {user_profile}")
+
+        for res in results:
+            current_score = res.score
+            applied_boost_factors = [] # To track which boosts were applied for logging/debugging
+
+            # Preferences-based boosting
+            prefs = user_profile.get("preferences", {})
+            doc_topic = (res.metadata.get("topic", "") or "").lower() if res.metadata else ""
+            doc_source = (res.metadata.get("source_name", "") or "").lower() if res.metadata else ""
+
+            if doc_topic and doc_topic in prefs.get("preferred_topics", []):
+                boost = prefs.get("boost_factor_topic", 1.0)
+                current_score *= boost
+                applied_boost_factors.append(f"topic({doc_topic}|{boost:.2f})")
+
+            if doc_source and doc_source in prefs.get("preferred_sources", []):
+                boost = prefs.get("boost_factor_source", 1.0)
+                current_score *= boost
+                applied_boost_factors.append(f"source({doc_source}|{boost:.2f})")
+
+            # Behavior-based boosting
+            behavior = user_profile.get("behavior", {})
+            if res.doc_id in behavior.get("liked_doc_ids", []):
+                boost = behavior.get("boost_factor_liked", 1.0)
+                current_score *= boost
+                applied_boost_factors.append(f"liked({boost:.2f})")
+
+            clicked_for_this_query = behavior.get("clicked_doc_ids_for_query", {}).get(query.lower(), [])
+            if res.doc_id in clicked_for_this_query:
+                boost = behavior.get("boost_factor_clicked_specific_query", 1.0)
+                current_score *= boost
+                applied_boost_factors.append(f"clicked_query({boost:.2f})")
+
+            # Create a new SearchResult to avoid modifying original list items if they are referenced elsewhere
+            # This ensures that if the same SearchResult list is used elsewhere, its scores are not mutated.
+            personalized_res = SearchResult(
+                doc_id=res.doc_id,
+                score=current_score,
+                content=res.content,
+                chunk_id=res.chunk_id,
+                metadata=res.metadata.copy() if res.metadata else {}, # Important to copy metadata
+                source_type=res.source_type
+            )
+            # Ensure metadata dict exists before trying to write to it
+            if personalized_res.metadata is None: personalized_res.metadata = {}
+
+            personalized_res.metadata["original_score_before_personalization"] = float(f"{res.score:.4f}") # Store original score
+            if applied_boost_factors:
+                personalized_res.metadata["personalization_factors_applied"] = ", ".join(applied_boost_factors)
+            personalized_res.metadata["personalized_for_user"] = user_id
+            personalized_results.append(personalized_res)
+
+        # Re-sort results based on new personalized scores
+        personalized_results.sort(key=lambda x: x.score, reverse=True)
+
+        if results and personalized_results and results[0].doc_id != personalized_results[0].doc_id:
+             logger.info(f"Personalization for user {user_id} REORDERED results. Original top: '{results[0].doc_id}' (score: {results[0].score:.2f}), New top: '{personalized_results[0].doc_id}' (score: {personalized_results[0].score:.2f}).")
+        elif results and personalized_results:
+             logger.info(f"Personalization for user {user_id} applied (scores potentially changed). Top result remained '{results[0].doc_id}'. Original score: {results[0].score:.2f}, New score: {personalized_results[0].score:.2f}.")
+        else:
+             logger.info(f"Personalization for user {user_id} processed. List was or became empty.")
+
+        return personalized_results
+
+    async def _federated_search_external(self, query: str, sources: Optional[List[str]] = None, top_k_per_source: int = 3) -> List[SearchResult]:
         """
         Performs search across external federated sources.
         Placeholder: This should use a plugin architecture for connectors.
         """
-        logger.info(f"Performing federated search for query: '{query}' across sources: {sources} (Placeholder)")
-        external_results: List[SearchResult] = []
-        # Example for a mock DB connector:
-        # if "external_db_1" in (sources or []):
-        #     # results_db1 = self.db_connector1.search(query)
-        #     # external_results.extend(self._adapt_external_results(results_db1, "external_db_1"))
-        #     external_results.append(SearchResult(doc_id="ext_db1_doc1", score=0.75, content="Content from DB1", source_type="federated_db1"))
+        logger.info(f"Performing federated search for query: '{query}' across {len(self.federated_sources)} configured sources.")
+        all_external_results: List[SearchResult] = []
 
-        # Example for a mock Web API connector:
-        # if "web_search_serpapi" in (sources or []):
-        #     # results_serp = self.serpapi_connector.search(query)
-        #     # external_results.extend(self._adapt_external_results(results_serp, "serpapi"))
-        #     external_results.append(SearchResult(doc_id="ext_web_page1", score=0.80, content="Content from Web search", source_type="federated_web_serpapi"))
+        # Create a list of tasks for asyncio.gather
+        search_tasks = []
+        top_k_per_source = 3 # Default top_k for each federated source
+        for connector in self.federated_sources:
+            if connector.is_available(): # Check if connector is available/configured
+                # Filter by specific sources if provided, otherwise query all configured & available
+                if sources is None or connector.source_name in sources:
+                    logger.debug(f"Querying federated source: {connector.source_name}")
+                    search_tasks.append(connector.search(query, top_k=top_k_per_source)) # Use a potentially different top_k for federated
+            else:
+                logger.warning(f"Federated source '{connector.source_name}' is not available. Skipping.")
 
-        return external_results
+        if not search_tasks:
+            logger.info("No available or matching federated sources to query.")
+            return []
+
+        # Execute all federated searches concurrently
+        list_of_results_from_sources = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+        for i, source_results in enumerate(list_of_results_from_sources):
+            connector_name = self.federated_sources[i].source_name # Assuming order is maintained
+            if isinstance(source_results, Exception):
+                logger.error(f"Error querying federated source '{connector_name}': {source_results}")
+            elif source_results: # If list is not empty
+                # The connector's search method should already return List[SearchResult]
+                # No further adaptation needed here if connectors adhere to the interface.
+                all_external_results.extend(source_results)
+                logger.debug(f"Received {len(source_results)} results from '{connector_name}'.")
+            else:
+                logger.debug(f"No results received from federated source '{connector_name}'.")
+
+        logger.info(f"Total {len(all_external_results)} results from all federated sources.")
+        return all_external_results
 
     def _adapt_external_results(self, external_api_results: List[Any], source_name: str) -> List[SearchResult]:
         """Adapts results from an external source to the common SearchResult format."""

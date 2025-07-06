@@ -3,9 +3,10 @@ Embeddings module supporting multiple embedding providers.
 """
 import os
 from abc import ABC, abstractmethod
-from typing import List, Union, Optional
+from typing import List, Union, Optional, Any # Added Any
 import logging
 import asyncio
+from PIL import Image # Added for CLIPEmbeddingProvider
 import httpx
 from openai import AsyncOpenAI
 
@@ -404,6 +405,55 @@ class LocalHuggingFaceEmbeddings(EmbeddingProvider):
             raise RuntimeError("Embedding dimension not initialized for LocalHuggingFaceEmbeddings.")
         return self._dim_cache
 
+class CLIPEmbeddingProvider(EmbeddingProvider):
+    """Embeddings using local CLIP models via SentenceTransformer for image and text."""
+    def __init__(self, model_name: str = "clip-ViT-B-32", batch_size: int = 32, device: Optional[str] = None):
+        from sentence_transformers import SentenceTransformer
+        from PIL import Image # For image type hint and potential loading if path is passed
+
+        self.model_name = model_name
+        self.batch_size = batch_size # Note: CLIP model's encode() might not use batch_size in the same way as text models for images.
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            self.model = SentenceTransformer(model_name, device=self.device)
+            self._dim_cache = self.model.get_sentence_embedding_dimension() # CLIP models usually have this
+            logger.info(f"Loaded CLIP model: {model_name} on device {self.device}. Dim: {self._dim_cache}")
+        except Exception as e:
+            logger.error(f"Failed to load CLIP model {model_name}: {e}")
+            raise
+
+    async def generate_embeddings(self, inputs: Union[str, List[str], Image.Image, List[Image.Image]], **kwargs) -> List[List[float]]:
+        """
+        Generates embeddings for text or image inputs.
+        Input can be a single text/image or a list of texts/images.
+        It's assumed all items in a list are of the same type (all text or all images).
+        """
+        if not isinstance(inputs, list):
+            inputs = [inputs]
+
+        if not inputs:
+            return []
+
+        # For simplicity, SentenceTransformer's CLIP model.encode() handles lists of texts or images directly.
+        # The batch_size in SentenceTransformer's encode method is for internal processing.
+        # We don't need async for model.encode here if it's CPU-bound or GIL-releasing.
+        # If it were a true IO-bound API call for a hosted CLIP model, it would be async.
+        try:
+            # The `encode` method of SentenceTransformer can take a list of texts or a list of PIL Images.
+            # It automatically handles batching internally based on its own logic for CLIP.
+            embeddings_np = self.model.encode(inputs, batch_size=self.batch_size, show_progress_bar=False)
+            return embeddings_np.tolist()
+        except Exception as e:
+            logger.error(f"Error generating CLIP embeddings with model {self.model_name}: {e}")
+            dim = self.get_embedding_dim()
+            return [[0.0] * dim for _ in inputs] # Return zero vectors on error
+
+    def get_embedding_dim(self) -> int:
+        if self._dim_cache is None:
+            # Should be set in __init__
+            raise RuntimeError("Embedding dimension not initialized for CLIPEmbeddingProvider.")
+        return self._dim_cache
+
 
 def create_embedding_provider(provider: str = "ollama", **kwargs) -> EmbeddingProvider:
     """Factory function to create embedding providers.
@@ -421,7 +471,8 @@ def create_embedding_provider(provider: str = "ollama", **kwargs) -> EmbeddingPr
         "cohere": CohereEmbeddings,
         "voyage": VoyageAIEmbeddings,
         "jina": JinaAIEmbeddings,
-        "local_hf": LocalHuggingFaceEmbeddings, # Added new provider type
+        "local_hf": LocalHuggingFaceEmbeddings,
+        "clip": CLIPEmbeddingProvider, # Added CLIP provider
     }
     
     provider_key = provider.lower()

@@ -155,21 +155,39 @@ class EmbeddingStrategyManager:
             return None
 
 
-    def get_compressed_embeddings(self, texts: List[str], provider: EmbeddingProvider, target_dim: Optional[int] = None) -> np.ndarray:
-        """Generates embeddings and then applies compression."""
-        logger.warning("Embedding compression is a placeholder.")
-        # embeddings = await provider.generate_embeddings(texts) # This needs to be async if provider is
-        # embeddings_np = np.array(embeddings)
-        # 1. Generate full embeddings
-        # 2. Apply compression technique (e.g., PCA, Matryoshka Embeddings, quantization)
-        # return compressed_embeddings_np
-        # embeddings = await provider.generate_embeddings(texts) # This needs to be async if provider is
-        # embeddings_np = np.array(embeddings)
-        # 1. Generate full embeddings
-        # 2. Apply compression technique (e.g., PCA, Matryoshka Embeddings, quantization)
-        # return compressed_embeddings_np
-        # This method should likely be async if provider.generate_embeddings is async
-        raise NotImplementedError("Embedding compression not fully implemented yet. Use `_apply_compression` as a utility.")
+    async def get_compressed_embeddings(self,
+                                        texts: List[str],
+                                        base_provider_strategy_params: Dict[str, Any],
+                                        compression_technique: str = "scalar_quantization_int8",
+                                        **compression_kwargs) -> List[Any]: # Return type matches _apply_compression
+        """
+        Generates full embeddings using a specified base provider and then applies compression.
+        Returns a list of compressed data structures (e.g., (quantized_vector, params) tuples for scalar quantization).
+        """
+        if not texts:
+            return []
+
+        # 1. Get the base embedding provider
+        base_provider = self.get_embedding_provider(base_provider_strategy_params)
+
+        # 2. Generate full float embeddings
+        # EmbeddingProvider.generate_embeddings is async
+        float_embeddings = await base_provider.generate_embeddings(texts)
+
+        if not float_embeddings:
+            logger.warning(f"Base provider {base_provider.__class__.__name__} returned no embeddings for compression. Input texts count: {len(texts)}")
+            return []
+
+        # 3. Apply compression
+        # _apply_compression is also async
+        compressed_data = await self._apply_compression(
+            float_embeddings,
+            technique=compression_technique,
+            **compression_kwargs
+        )
+
+        logger.info(f"Successfully generated and compressed {len(texts)} texts using technique '{compression_technique}'.")
+        return compressed_data
 
     async def _apply_compression(self, embeddings: List[List[float]], technique: str = "scalar_quantization_int8", **kwargs) -> List[List[Any]]: # Output type might change
         """
@@ -177,41 +195,47 @@ class EmbeddingStrategyManager:
         Placeholder for actual compression logic.
         """
         if not embeddings:
-            return []
+            return [] # Return type should be List[Tuple[List[int], Dict[str, float]]] for quantization
 
         logger.info(f"Attempting to apply '{technique}' compression to {len(embeddings)} embeddings.")
 
         if technique == "scalar_quantization_int8":
-            compressed_embeddings = []
-            scales_and_zeros = [] # To store quantization parameters
+            results_with_params = [] # Will store tuples of (quantized_vector_list, params_dict)
 
             for emb_float_list in embeddings:
                 emb_np = np.array(emb_float_list, dtype=np.float32)
 
-                # Calculate scale and zero point for symmetric int8 quantization [-127, 127]
-                # For simplicity, using per-vector quantization. Per-tensor or per-channel could also be used.
-                abs_max = np.abs(emb_np).max()
-                if abs_max == 0: # Handle zero vectors
+                abs_max = np.max(np.abs(emb_np))
+
+                if abs_max < 1e-9: # Treat near-zero vectors as zero to avoid large scales
                     scale = 1.0
-                    zero_point = 0 # Or handle as all zeros directly
-                    quantized_emb = np.zeros_like(emb_np, dtype=np.int8)
+                    zero_point = 0
+                    quantized_emb_np = np.zeros_like(emb_np, dtype=np.int8)
                 else:
+                    # Symmetric quantization for int8: scale = abs_max / 127.0
                     scale = abs_max / 127.0
-                    zero_point = 0 # For symmetric quantization
-                    quantized_emb = np.round(emb_np / scale).astype(np.int8)
+                    zero_point = 0 # For symmetric int8, zero_point is 0
 
-                compressed_embeddings.append(quantized_emb.tolist())
-                scales_and_zeros.append({"scale": float(scale), "zero_point": int(zero_point)})
+                    # Quantize: (value / scale) -> round -> clip -> cast to int8
+                    # Add epsilon to scale denominator to prevent division by zero if abs_max is tiny but not zero.
+                    scaled_values = emb_np / (scale + 1e-12) # Add epsilon for stability
+                    rounded_values = np.round(scaled_values)
+                    # Clip to ensure values are within the int8 range before casting
+                    clipped_values = np.clip(rounded_values, -127, 127) # Standard range for signed int8 for this scheme
+                    quantized_emb_np = clipped_values.astype(np.int8)
 
-            logger.info(f"Applied scalar_quantization_int8. Output type: List[List[int]]. "
-                        f"Scales/zero_points also generated (conceptual - not returned by this function directly).")
-            # For actual use, these scales/zeros need to be stored alongside the embeddings
-            # or the function needs to return them. For now, just logging.
-            # This function is returning List[List[Any]] so List[List[int]] is fine.
-            return compressed_embeddings
+                quantization_params = {"scale": float(scale), "zero_point": int(zero_point)}
+                results_with_params.append((quantized_emb_np.tolist(), quantization_params))
+
+            logger.info(f"Applied scalar_quantization_int8. Returning list of (quantized_vector, params) tuples.")
+            return results_with_params # Return list of tuples
 
         elif technique == "pca":
             target_dim = kwargs.get("target_dim")
+            # PCA returns float embeddings, so the List[List[Any]] signature for _apply_compression is okay,
+            # but the overall plan mentioned returning params for scalar quantization.
+            # For PCA, the "params" would be the PCA model itself, which is more complex to return here.
+            # This function is primarily designed for techniques that modify the vector and have simple per-vector params.
             if not target_dim:
                 logger.warning("PCA compression requested but 'target_dim' not provided. Returning original embeddings.")
                 return embeddings
@@ -297,4 +321,26 @@ class EmbeddingStrategyManager:
 # text_provider = strategy_manager.get_embedding_provider({"language": "en", "modality": "text"})
 # image_provider = strategy_manager.get_multimodal_embedding_provider({"modality": "image"}) # or "multimodal"
 
+    @staticmethod
+    def dequantize_vector(quantized_vector: List[int], params: Dict[str, float]) -> List[float]:
+        """
+        Dequantizes an int8 vector back to its approximate float representation
+        using the provided scale and zero_point.
+        """
+        if not isinstance(quantized_vector, list) or not all(isinstance(x, int) for x in quantized_vector):
+            raise TypeError("quantized_vector must be a list of integers.")
+        if not isinstance(params, dict) or "scale" not in params or "zero_point" not in params:
+            raise ValueError("params must be a dict with 'scale' and 'zero_point' keys.")
+
+        scale = params["scale"]
+        zero_point = params["zero_point"] # Typically 0 for our symmetric int8 quantization
+
+        if scale == 0: # Should ideally not happen if abs_max was > 0 during quantization
+            logger.warning("Dequantization scale is zero, returning zero vector.")
+            return [0.0] * len(quantized_vector)
+
+        # Dequantize: (quantized_value - zero_point) * scale
+        # For symmetric int8, zero_point is 0, so it's just quantized_value * scale
+        dequantized_np = (np.array(quantized_vector, dtype=np.float32) - zero_point) * scale
+        return dequantized_np.tolist()
 ```
